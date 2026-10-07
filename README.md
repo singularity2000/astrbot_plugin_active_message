@@ -169,7 +169,7 @@ AstrBot 插件 **主动会话插件**（`astrbot_plugin_active_message`）包含
 | `{user_last_message_time}` `{user_last_message_time_ago}` `{ai_last_sent_time}` `{unreplied_count}` | 最近真人发言、距今时间、机器人最近发送时间和连续未获回复次数。 |
 | `{user_context}` | 根据当前会话信息组成的概况。 |
 
-这些命名参考了“心念”插件，但本插件不读取心念插件内部数据；没有实现本插件日历，因此不提供 `{calendar_today}`。
+当前版本暂未实现日历，因此不提供 `{calendar_today}`。下一步将开发日程功能。
 
 ## 主动聊天作息与调度
 
@@ -272,11 +272,11 @@ AstrBot 插件 **主动会话插件**（`astrbot_plugin_active_message`）包含
 │  ├─ schedule.py                   # 时间段与睡眠、正常、活跃三档作息
 │  └─ observability.py              # 分级日志与排障信息
 ├─ pages/console/                   # 运行检查台页面、样式和交互脚本
-├─ .astrbot-plugin/i18n/             # 页面中文名称
+├─ .astrbot-plugin/i18n/            # 页面中文名称
 ├─ _conf_schema.json                # WebUI 配置项定义，不是用户配置文件
 ├─ metadata.yaml                    # 插件元数据
 ├─ requirements.txt                 # 依赖说明
-├─ LICENSE                         # AGPL-3.0 开源许可证
+├─ LICENSE                          # AGPL-3.0 开源许可证
 └─ README.md                        # 使用说明
 
 AstrBot 插件配置目录（data/config/）
@@ -289,7 +289,6 @@ AstrBot 分配给本插件的数据目录（通常位于 data/plugin_data/astrbo
 ## 限制与已知事项
 
 - 机器人精力统计覆盖可通过原生消息/工具钩子观察到的发送轮次；直接绕过这些钩子的第三方插件发送不能保证被完整计入。
-- 不设强制 AstrBot 版本范围，但依赖原生人格解析、主 Agent、消息历史和 Pages 接口；缺少接口的版本不能保证兼容。
 - AstrBot 的“对话分支历史”、群聊消息历史和群上下文感知不是同一份数据；模型能看到的范围受 AstrBot 自身配置和上下文压缩影响。
 - 不同平台对“群号/用户号”和主动消息支持不同。完整 SID 是最可靠的配置方式。
 
@@ -297,4 +296,4 @@ AstrBot 分配给本插件的数据目录（通常位于 data/plugin_data/astrbo
 
 Copyright (c) 2026 singularity2000.
 
-本项目采用 [GNU Affero General Public License v3.0](LICENSE)（仅第 3 版，`AGPL-3.0-only`）。允许使用、修改和商用；分发时须遵守许可证的源码提供要求。若修改本项目并通过网络向用户提供交互服务，还须按许可证要求向这些用户提供对应源码。具体条款以 [LICENSE](LICENSE) 为准。
+本项目采用 [GNU Affero General Public License v3.0](LICENSE)（`AGPL-3.0-only`）。允许使用、修改和商用；分发时须遵守许可证的源码提供要求。若修改本项目并通过网络向用户提供交互服务，还须按许可证要求向这些用户提供对应源码。
