@@ -1,0 +1,2 @@
+# Runtime dependency is provided by AstrBot.
+# TypeSafe Jev uses the standard library plus aiohttp, which AstrBot already provides.
