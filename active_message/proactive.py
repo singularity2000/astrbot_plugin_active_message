@@ -32,6 +32,8 @@ class SessionBoundSendTool(FunctionTool):
         now = self.plugin._now(self.sid)
         if current_mood(now, config.sleep_hours, config.active_hours) == "睡眠":
             return "error: proactive chat is sleeping."
+        if self.plugin._agenda_block(self.sid, "proactive"):
+            return "error: this schedule pauses plugin-initiated chat."
         state = self.plugin.runtime.get(self.sid)
         if (not context.context.event.get_extra("_active_message_sent", False)
                 and state.last_bot_date == now.date().isoformat()

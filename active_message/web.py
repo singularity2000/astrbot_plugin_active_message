@@ -1,6 +1,8 @@
 """使用原生 Pages 的登录校验与接口，不另起服务器，不公开原始日志。"""
 from __future__ import annotations
 import asyncio
+from datetime import datetime
+
 import copy
 import hashlib
 import json
@@ -147,7 +149,21 @@ class PageAPI:
             if isinstance(index, bool) or not isinstance(index, int) or index < -1 or index >= len(candidate.groups):
                 raise ValueError("会话组索引无效，请刷新配置。")
             entry = candidate.groups[index] if index >= 0 else candidate.global_entry
-            return self._response({"effective":public_config(entry.raw), "errors":entry.errors, "warnings":candidate.warnings})
+            result = {"effective":public_config(entry.raw), "errors":entry.errors, "warnings":candidate.warnings}
+            if candidate.agenda_catalog_errors:
+                result["errors"] = {**result["errors"], "agenda_catalog": candidate.agenda_catalog_errors}
+            if "calendar_month" in data:
+                from .schedule import get_timezone
+                sid = candidate.config.groups[index].sids[0] if index >= 0 and candidate.config.groups[index].sids else None
+                name = entry.config.timezone or self.plugin.context.get_config(umo=sid).get("timezone", "") or ""
+                try:
+                    tz = get_timezone(name)
+                except (KeyError, ValueError):
+                    tz = get_timezone("")
+                now = datetime.now(tz)
+                result["calendar"] = entry.agenda.month(data["calendar_month"] or now.strftime("%Y-%m"), now)
+                result["calendar"]["timezone_note"] = "未单独设置时区时，以本组首个 SID 的框架时区预览；实际各会话使用自己的时区。" if index >= 0 else "未单独设置时区时，以框架默认时区预览。"
+            return self._response(result)
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
 
     async def settings(self):

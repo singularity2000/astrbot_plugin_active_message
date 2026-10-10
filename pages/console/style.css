@@ -14,7 +14,9 @@
   --warning-bg:#fff5df;
   --danger:#ac3449;
   --focus:#346dca;
-  --radius:12px;
+  --radius:10px;
+  --rail-width:168px;
+  --dock-height:0px;
   font:15px/1.6 "Segoe UI Variable","Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif
 }
 :root[data-theme=dark] {
@@ -173,7 +175,7 @@ pre {
 }
 .shell {
   display:grid;
-  grid-template-columns:218px minmax(0,1fr);
+  grid-template-columns:var(--rail-width) minmax(0,1fr);
   min-height:100vh
 }
 .rail {
@@ -337,7 +339,7 @@ main {
   margin:0 0 22px
 }
 .section>p.muted {
-  max-width:76ch;
+  max-width:none;
   font-size:14px
 }
 .section.intro {
@@ -399,23 +401,6 @@ main {
 .effective {
   margin-top:7px;
   color:var(--teal)
-}
-.field-help {
-  margin-top:6px;
-  font-size:12px;
-  color:var(--muted)
-}
-.field-help summary {
-  display:inline-block;
-  cursor:pointer;
-  color:var(--accent);
-  text-decoration:underline;
-  text-decoration-style:dotted;
-  text-underline-offset:4px
-}
-.field-help p {
-  margin:8px 0 0;
-  line-height:1.7
 }
 .form-section {
   border:1px solid var(--line);
@@ -676,7 +661,7 @@ footer {
 }
 @media(max-width:1100px) {
   .shell {
-    grid-template-columns:180px minmax(0,1fr)
+    grid-template-columns:var(--rail-width) minmax(0,1fr)
   }
   .rail {
     padding:24px 12px
@@ -713,9 +698,6 @@ footer {
   .field {
     grid-template-columns:1fr;
     gap:11px
-  }
-  .field-help {
-    margin-top:4px
   }
   .section {
     padding:20px
@@ -924,8 +906,8 @@ footer {
     line-height:1.7
   }
   .rail {
-    padding:22px 14px;
-    gap:22px
+    padding:20px 10px;
+    gap:20px
   }
   .brand strong {
     font-size:17px
@@ -966,8 +948,8 @@ footer {
     padding:18px 22px 28px
   }
   .section {
-    padding:18px;
-    margin-bottom:16px
+    padding:16px;
+    margin-bottom:14px
   }
   .section>p.muted {
     font-size:13px
@@ -985,8 +967,8 @@ footer {
     margin:9px 0
   }
   .field {
-    padding:12px 0;
-    gap:12px 16px
+    padding:11px 0;
+    gap:10px 16px
   }
   .field-label>label {
     font-size:13px
@@ -1076,6 +1058,159 @@ footer {
 }
 @media(min-width:1101px) {
   .shell {
-    grid-template-columns:196px minmax(0,1fr)
+    grid-template-columns:var(--rail-width) minmax(0,1fr)
   }
 }
+
+/* Scope is visible without depending on color alone. */
+.template-field { grid-template-columns:minmax(0,1fr); gap:8px; }
+.template-field textarea { min-height:110px; }
+.effective { display:flex; flex-wrap:wrap; gap:5px 9px; align-items:center; font-size:12px; margin-top:7px; overflow-wrap:anywhere; }
+.override-badge { display:inline-flex; align-items:center; padding:3px 8px; border-radius:5px; background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); font-size:12px; font-weight:650; }
+.field:not(.overridden) .override-badge { border-color:var(--line); background:var(--surface-2); color:var(--muted); font-weight:400; }
+.field.overridden { border-left:3px solid var(--accent); padding-left:12px; }
+.effective-value { color:var(--muted); }
+.inherit-reset { padding:2px 7px; font-size:12px; }
+.override-summary { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; }
+.only-overrides .field:not(.overridden) { display:none; }
+.group-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; align-items:start; }
+.group-card { min-width:0; margin:0; }
+.group-card h2 { font-size:17px; overflow-wrap:anywhere; }
+.group-card .field { grid-template-columns:132px minmax(0,1fr); gap:10px; }
+.group-card .actions { gap:6px; }
+.group-card .actions button { padding:4px 8px; font-size:12px; }
+.group-grid+.primary { margin-top:14px; }
+.group-choice-summary { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+.drag-handle { cursor:grab; }
+.dragging { opacity:.5; }
+.drop-target { outline:2px dashed var(--accent); outline-offset:3px; }
+/* The dock is a temporary tool surface, not another configuration section. */
+.placeholder-dock { position:fixed; z-index:40; left:calc(var(--rail-width) + 22px); right:22px; bottom:12px; padding:12px; background:var(--surface); border:1px solid var(--accent); border-radius:10px; box-shadow:0 -3px 22px #0002; }
+.dock-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+.dock-head strong { flex:1; font-size:13px; }
+.dock-head input { width:230px; }
+.dock-items { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr)); gap:6px; max-height:174px; overflow-y:auto; overscroll-behavior:contain; }
+.dock-token { text-align:left; display:flex; flex-direction:column; gap:3px; padding:7px 10px; }
+.dock-token code { color:var(--accent); font-size:12px; }
+.dock-token span { color:var(--muted); font-size:12px; line-height:1.45; }
+textarea,input { scroll-margin-bottom:calc(var(--dock-height) + 24px); }
+/* Schedules: compact editable list; calendar is strictly a read-only projection. */
+.agenda-list { margin-top:14px; }
+.agenda-row { display:flex; gap:16px; justify-content:space-between; padding:12px 0; border-top:1px solid var(--line); }
+.agenda-row-info { min-width:0; }
+.agenda-row-heading { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+.agenda-row-heading strong { overflow-wrap:anywhere; }
+.agenda-row-actions { display:flex; gap:6px; align-items:flex-start; flex-shrink:0; }
+.agenda-row-actions button { font-size:12px; padding:4px 8px; }
+.agenda-description { white-space:pre-wrap; overflow-wrap:anywhere; margin:5px 0; font-size:13px; }
+.agenda-muted .agenda-row-info { opacity:.65; }
+.agenda-now { padding:12px 16px; border-left:3px solid var(--teal); background:var(--surface); margin-bottom:14px; }
+.agenda-now p { margin:6px 0; }
+.calendar-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.calendar-toolbar h3 { flex:1; margin:0; }
+.calendar-month-picker { width:145px; min-width:0; }
+.calendar-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); border-left:1px solid var(--line); border-top:1px solid var(--line); margin:12px 0; }
+.calendar-weekday { text-align:center; background:var(--surface-2); padding:8px 0; border-right:1px solid var(--line); border-bottom:1px solid var(--line); font-size:12px; }
+.calendar-day { display:flex; flex-direction:column; gap:4px; min-width:0; min-height:110px; padding:7px; text-align:left; border:0; border-right:1px solid var(--line); border-bottom:1px solid var(--line); border-radius:0; background:var(--surface); }
+.calendar-day.outside-month { background:var(--bg); color:var(--muted); }
+.calendar-date { align-self:flex-start; display:inline-flex; width:24px; height:24px; justify-content:center; align-items:center; border-radius:50%; font-size:13px; }
+.calendar-day.is-today .calendar-date { background:var(--accent); color:var(--surface); font-weight:700; }
+.calendar-day.selected { box-shadow:inset 0 0 0 2px var(--accent); }
+.calendar-event { display:block; max-width:100%; padding:2px 4px; border-radius:3px; font-size:11px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; background:var(--accent-soft); color:var(--accent); border-left:2px solid var(--accent); }
+.calendar-event.role-event { border-left-color:var(--teal); color:var(--teal); background:var(--surface-2); }
+.calendar-details { padding-top:10px; }
+.calendar-detail { border-top:1px solid var(--line); padding:10px 0; }
+.calendar-detail .tag { margin-left:8px; }
+.calendar-detail p { margin:5px 0; }
+.modal:has(.agenda-editor) { width:min(860px,calc(100vw - 32px)); max-height:90vh; overflow:auto; }
+.agenda-editor { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 18px; margin:16px 0; }
+.agenda-editor-field { min-width:0; }
+.agenda-editor-field>label,.agenda-editor-field>legend { display:block; font-size:13px; font-weight:600; margin-bottom:5px; }
+.agenda-editor-field>input:not([type=checkbox]),.agenda-editor-field>select,.agenda-editor-field>textarea { width:100%; }
+.agenda-editor-field[data-event-field=description],.agenda-editor-field[data-event-field=weekdays],.agenda-editor>.warning { grid-column:1/-1; }
+.weekday-picker { border:1px solid var(--line); border-radius:7px; display:flex; gap:12px; flex-wrap:wrap; padding:10px; }
+.weekday-picker label { display:flex; gap:5px; align-items:center; font-size:13px; }
+.weekday-picker input { margin:0; }
+@media(min-width:701px) and (max-width:1100px) { :root { --rail-width:156px; } .group-grid { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:700px) {
+  :root { --rail-width:0px; }
+  .group-grid,.agenda-editor,.group-card .field { grid-template-columns:minmax(0,1fr); }
+  .placeholder-dock { left:8px; right:8px; bottom:8px; }
+  .dock-head { flex-wrap:wrap; gap:7px; }
+  .dock-head strong { flex-basis:100%; }
+  .dock-head input { flex:1; min-width:0; width:auto; }
+  .dock-items { max-height:150px; }
+  .calendar-day { min-height:84px; padding:3px; gap:3px; }
+  .calendar-date { width:22px; height:22px; }
+  .calendar-event { font-size:10px; padding:1px 2px; }
+  .agenda-row { flex-direction:column; gap:8px; }
+  .calendar-toolbar button { font-size:12px; padding:4px 7px; }
+}
+
+/* Stable header rows: actions above, connection and horizontal draft locations below. */
+header {
+  display:grid;
+  grid-template-columns:minmax(170px,auto) minmax(0,1fr);
+  grid-template-areas:"title actions" "connection changes";
+  align-items:center;
+  gap:4px 18px;
+  padding:10px 22px;
+}
+header h1 { grid-area:title; margin:0; }
+header .toolbar { grid-area:actions; min-width:0; flex-wrap:nowrap; justify-content:flex-end; }
+header .toolbar>* { flex-shrink:0; white-space:nowrap; }
+#connection { grid-area:connection; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dirty-slot { grid-area:changes; min-width:0; height:30px; }
+.dirty-summary { display:flex; align-items:center; gap:10px; height:100%; min-width:0; text-align:left; }
+.dirty-heading { display:flex; flex:none; gap:5px; align-items:center; white-space:nowrap; }
+.dirty-heading .tag { padding:2px 6px; }
+.dirty-heading small { color:var(--warning); font-size:12px; }
+#dirty-locations {
+  display:flex; align-items:center; gap:0; flex:1; min-width:0; height:30px;
+  margin:0; padding:0; list-style:none; overflow-x:auto; overflow-y:hidden;
+  overscroll-behavior-x:contain; scrollbar-width:thin;
+  font-size:12px; line-height:20px; color:var(--muted);
+}
+#dirty-locations li { flex:none; white-space:nowrap; padding:0 10px; }
+#dirty-locations li+li { border-left:1px solid var(--line); }
+#dirty-locations:focus-visible { outline:2px solid var(--focus); outline-offset:1px; border-radius:3px; }
+@media(max-width:959px) {
+  header { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"title actions" "connection connection" "changes changes"; gap:2px 12px; }
+}
+@media(max-width:700px) {
+  header { grid-template-columns:minmax(0,1fr); grid-template-areas:"title" "connection" "actions" "changes"; padding:10px 16px; gap:3px; }
+  header .toolbar { justify-content:flex-start; gap:6px; }
+  header .toolbar button { padding:7px 8px; }
+  .theme-label select { margin-left:3px; max-width:96px; }
+  .dirty-summary { gap:6px; }
+}
+
+
+/* Explanations float above content; opening help never changes the form layout. */
+.help-control { display:inline-flex; flex:none; vertical-align:middle; font-weight:400; }
+.help-control>.help-trigger { display:inline-flex; align-items:center; justify-content:center; flex:none; width:32px; height:32px; min-height:32px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:help; touch-action:manipulation; }
+.help-icon { display:grid; place-items:center; width:17px; height:17px; border:1.5px solid currentColor; border-radius:50%; font:600 12px/1 "Segoe UI",sans-serif; }
+.help-trigger:hover,.help-trigger[aria-expanded=true] { color:var(--accent); background:var(--accent-soft); }
+.help-trigger:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
+.help-description { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+.help-popup { position:fixed; z-index:1100; box-sizing:border-box; padding:13px 15px; border:1px solid var(--line); border-radius:9px; background:var(--surface); color:var(--text); box-shadow:0 5px 22px rgba(17,33,55,.18); overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; text-align:left; font-size:13px; line-height:1.65; overflow-wrap:anywhere; }
+.help-popup>strong { display:block; font-size:13px; margin-bottom:7px; }
+.help-text { white-space:pre-wrap; user-select:text; }
+.field-label,.help-label { display:flex; align-items:center; gap:3px; min-width:0; flex-wrap:wrap; }
+.field-label>label,.help-label>label { min-width:0; }
+.help-label { margin-bottom:4px; font-size:13px; font-weight:600; }
+.section h2>.help-control,.form-section>summary>.help-control,legend>.help-control { margin-left:5px; }
+.help-note { display:inline-flex; gap:3px; align-items:center; color:var(--muted); font-size:12px; }
+.dock-item { display:flex; align-items:center; min-width:0; gap:2px; }
+.dock-item>.dock-token { flex:1; min-width:0; }
+@media(any-pointer:coarse) {
+  .help-control>.help-trigger { width:44px; height:44px; min-height:44px; }
+}
+
+.field-hint { flex-basis:100%; margin:2px 0 0; color:var(--muted); font-size:12px; font-weight:400; line-height:1.55; overflow-wrap:anywhere; }
+.section>p.muted { max-width:78ch; }
+.help-note { line-height:1.55; }
+
+/* Keep placeholder help on the title row, not a separate content row. */
+.placeholder-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; }
+.placeholder-heading>code { min-width:0; overflow-wrap:anywhere; }

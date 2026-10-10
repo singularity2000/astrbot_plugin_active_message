@@ -1,5 +1,7 @@
-"""主动会话插件 v1.1.0。消息判断与发言均保持原 SID。"""
 from __future__ import annotations
+
+# 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
+PLUGIN_VERSION = "1.2.0"
 
 import asyncio
 import json
@@ -17,6 +19,7 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.platform.message_type import MessageType
 
 from .active_message.alarm import DeadlineAlarm
+from .active_message.agenda import context_text
 from .active_message.context_input import ContextUnavailable, read_context
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
@@ -89,8 +92,52 @@ class ActiveMessagePlugin(Star):
 
     def _now(self, sid: str | None = None) -> datetime:
         cfg = self._config_for(sid)
-        name = (cfg.timezone if cfg.proactive_enabled and self._entry_for(sid).valid("proactive") else "") or self.context.get_config(umo=sid).get("timezone", "") or ""
+        name = (cfg.timezone if ((cfg.proactive_enabled and self._entry_for(sid).valid("proactive")) or (self._entry_for(sid).agenda.enabled and self._entry_for(sid).valid("agenda"))) else "") or self.context.get_config(umo=sid).get("timezone", "") or ""
         return datetime.now(get_timezone(name))
+
+    def _agenda_now(self, sid: str | None = None) -> datetime:
+        """Schedules keep their timezone even when proactive chat is disabled."""
+        name = self._config_for(sid).timezone or self.context.get_config(umo=sid).get("timezone", "") or ""
+        try:
+            return datetime.now(get_timezone(name))
+        except (ValueError, KeyError):
+            self._warn_once("AGENDA_TIMEZONE_INVALID", sid or "")
+            return datetime.now(get_timezone(""))
+
+    def _agenda_block(self, sid: str, feature: str) -> str:
+        agenda = self._entry_for(sid).agenda
+        if not agenda.enabled:
+            return ""
+        titles = agenda.blocked(feature, self._agenda_now(sid))
+        return "日程暂停：" + "、".join(titles) if titles else ""
+
+    def _inject_agenda(self, event: AstrMessageEvent, run_context: Any) -> None:
+        sid = event.unified_msg_origin
+        entry = self._entry_for(sid)
+        if (not self._available() or not self.scopes.match(sid)[0] or not entry.valid("agenda")
+                or not entry.agenda.enabled or not session_allows_plugin(self.context, sid, PLUGIN_ID)
+                or event.get_extra("_active_message_agenda_injected", False)):
+            return
+        from astrbot.core.agent.message import TextPart
+        text = context_text(entry.agenda.snapshot(self._agenda_now(sid)))
+        if not text:
+            return
+        # The native temporary content API excludes these details from saved history.
+        if not hasattr(TextPart, "mark_as_temp"):
+            self._warn_once("AGENDA_CONTEXT_UNSUPPORTED", sid)
+            return
+        for message in reversed(run_context.messages):
+            if message.role != "user":
+                continue
+            part = TextPart(text=text).mark_as_temp()
+            if isinstance(message.content, str):
+                message.content = [TextPart(text=message.content), part]
+            elif isinstance(message.content, list):
+                message.content.append(part)
+            else:
+                continue
+            event.set_extra("_active_message_agenda_injected", True)
+            return
 
     def _capture(self, run_id, label, data):
         try:
@@ -138,7 +185,7 @@ class ActiveMessagePlugin(Star):
         default_cfg = self.context.get_config()
         if default_cfg.get("provider_ltm_settings", {}).get("active_reply", {}).get("enable", False):
             self._warn_once("ORIGINAL_ACTIVE_REPLY_ENABLED")
-        self.observer.log("info", "PLUGIN_INITIALIZED", version="1.1.0", global_enabled=self.plugin_config.enabled, effective_enabled=self.settings.any_enabled(),
+        self.observer.log("info", "PLUGIN_INITIALIZED", version=PLUGIN_VERSION, global_enabled=self.plugin_config.enabled, effective_enabled=self.settings.any_enabled(),
                           valid=self._valid, mode=self.plugin_config.decision.mode,
                           threshold=self.plugin_config.threshold, weights=self.plugin_config.weights(),
                           groups=len(self.plugin_config.groups))
@@ -240,6 +287,10 @@ class ActiveMessagePlugin(Star):
         matched, group = self.scopes.match(sid)
         if not matched:
             return
+        agenda_reason = self._agenda_block(sid, "interjection")
+        if agenda_reason:
+            skip(agenda_reason)
+            return
         native_cfg = self.context.get_config(umo=sid)
         if native_cfg.get("provider_ltm_settings", {}).get("active_reply", {}).get("enable", False):
             self._warn_once("ORIGINAL_ACTIVE_REPLY_ENABLED", sid)
@@ -305,6 +356,10 @@ class ActiveMessagePlugin(Star):
                 self.observer.log("debug", "AGENT_ACTIVE" if state.agent_active else "COOLDOWN", sid=sid, run_id=run_id)
                 self.traces.finish(run_id, "Agent 正在运行" if state.agent_active else "仍在共享冷却")
                 return None
+            agenda_reason = self._agenda_block(sid, "interjection")
+            if agenda_reason:
+                self.traces.finish(run_id, agenda_reason)
+                return None
             state.judging = True  # Ordinary new messages no longer cancel this request.
             snapshot_at = time.monotonic()
             conversation = await current_conversation(self.context, sid)
@@ -322,6 +377,9 @@ class ActiveMessagePlugin(Star):
                         self.traces.add(run_id, "取得判断额度", {"queue_ms": round((time.monotonic() - queued_at) * 1000, 1)})
                         if generation != state.generation or time.monotonic() - snapshot_at > cfg.decision_max_age_seconds:
                             self.traces.finish(run_id, "排队后快照已过期")
+                            return None
+                        if self._agenda_block(sid, "interjection"):
+                            self.traces.finish(run_id, "排队期间进入暂停插话日程")
                             return None
                         decision = await self.decision_client.decide(cfg.decision, values)
             except ContextUnavailable as exc:
@@ -349,6 +407,10 @@ class ActiveMessagePlugin(Star):
                               triggered=score.final_score > threshold)
             if score.final_score <= threshold:
                 self.traces.finish(run_id, "未超过插话阈值")
+                return None
+            agenda_reason = self._agenda_block(sid, "interjection")
+            if agenda_reason:
+                self.traces.finish(run_id, agenda_reason)
                 return None
             # Refresh data for the speaking Agent without changing the real sender/event.
             values = await self._values(event, current, "智能插话")
@@ -412,6 +474,7 @@ class ActiveMessagePlugin(Star):
 
     @filter.on_agent_begin(priority=-100)
     async def on_agent_begin(self, event: AstrMessageEvent, run_context: Any) -> None:
+        self._inject_agenda(event, run_context)
         sid = event.unified_msg_origin
         if sid not in self.runtime.sessions:
             return
@@ -525,6 +588,11 @@ class ActiveMessagePlugin(Star):
                            last_human_at=state.last_human_at, last_bot_at=state.last_bot_at, unreplied_count=self.runtime.unreplied.get(sid, 0))
         values["image_descriptions"] = json.dumps(bundle.images, ensure_ascii=False)
         values["_context_payload"] = bundle.payload()
+        agenda = self._entry_for(sid).agenda.snapshot(self._agenda_now(sid))
+        values["schedule_current"] = json.dumps(agenda["current"], ensure_ascii=False)
+        values["schedule_upcoming"] = json.dumps(agenda["upcoming"], ensure_ascii=False)
+        if agenda["enabled"]:
+            values["_context_payload"]["schedule"] = agenda
         run_id = event.get_extra("_active_message_run_id") or event.get_extra(META_KEY, {}).get("run_id")
         values["_run_id"] = run_id
         self.traces.add(run_id, "上下文条数与来源", bundle.counts())
@@ -589,6 +657,9 @@ class ActiveMessagePlugin(Star):
             return "当前处于睡眠时段。"
         if state.last_bot_date == now.date().isoformat() and state.daily_proactive_sent >= cfg.proactive_daily_limit:
             return "本会话已达到今日成功主动发言轮次上限。"
+        agenda_reason = self._agenda_block(sid, "proactive")
+        if agenda_reason:
+            return agenda_reason
         if state.agent_active:
             return "本会话 Agent 仍在处理另一轮任务。"
         if self._cooling(state, sid):
@@ -765,7 +836,7 @@ class ActiveMessagePlugin(Star):
         matched, group = self.scopes.match(sid)
         state = self.runtime.sessions.get(sid)
         yield event.plain_result(
-            f"主动会话 v1.1.0\n总开关：{'开启' if cfg.enabled else '关闭'}；配置有效：{self._valid}\n"
+            f"主动会话 v{PLUGIN_VERSION}\n总开关：{'开启' if cfg.enabled else '关闭'}；配置有效：{self._valid}\n"
             f"SID：{sid}\n范围：{'生效' if matched else '不生效'}；会话组：{group.name if group else '全局'}\n"
             f"插话配置：{'有效' if self._feature_valid(sid, 'interjection') else '无效，已暂停插话'}；主动聊天配置：{'有效' if self._feature_valid(sid, 'proactive') else '无效，已暂停主动聊天'}\n"
             f"配置问题：{self._config_errors}\n"

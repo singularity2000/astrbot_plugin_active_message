@@ -2,11 +2,13 @@
 from __future__ import annotations
 import copy
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass
 from .config import PluginConfig
 from .sessions import SessionScopes
 from .validation import validate_config
+from .agenda import Agenda
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "_conf_schema.json"
 
@@ -25,10 +27,14 @@ def shape_errors(raw, fields, prefix=""):
         if kind == "object":
             errors.extend(shape_errors(value, spec["items"], path + "."))
         elif kind == "template_list":
-            if not isinstance(value, list): errors.append((path, "会话组必须是列表。"))
+            if not isinstance(value, list): errors.append((path, "此项必须是列表。"))
             else:
                 for index, item in enumerate(value):
-                    errors.extend(shape_errors(item, spec["templates"]["group"]["items"], f"{path}[{index}]."))
+                    key = item.get("__template_key", next(iter(spec["templates"]))) if isinstance(item, dict) else ""
+                    if key not in spec["templates"]:
+                        errors.append((f"{path}[{index}]", "未知的列表模板。"))
+                    else:
+                        errors.extend(shape_errors(item, spec["templates"][key]["items"], f"{path}[{index}]."))
         elif kind == "list":
             if not isinstance(value, list) or any(not isinstance(v, str) for v in value): errors.append((path, "此项需要文本列表。"))
         elif kind == "bool":
@@ -46,7 +52,8 @@ def fill_defaults(raw, fields):
             output[key] = fill_defaults(raw.get(key, {}), spec["items"])
         elif spec["type"] == "template_list":
             items = raw.get(key, [])
-            output[key] = [fill_defaults(item, spec["templates"]["group"]["items"]) | {"__template_key": "group"}
+            template = next(iter(spec["templates"]))
+            output[key] = [fill_defaults(item, spec["templates"][template]["items"]) | {"__template_key": template}
                            for item in items if isinstance(item, dict)] if isinstance(items, list) else []
         else:
             output[key] = copy.deepcopy(raw.get(key, spec.get("default")))
@@ -87,9 +94,11 @@ class EffectiveSettings:
     raw: dict
     config: PluginConfig
     errors: dict
+    agenda: Agenda
 
     def valid(self, feature):
-        return not self.errors.get("shared") and not self.errors.get(feature)
+        return (not self.errors.get("shared") and not self.errors.get(feature)
+                and not (self.agenda.enabled and self.errors.get("agenda")))
 
 
 class Settings:
@@ -98,6 +107,15 @@ class Settings:
         self.shape_errors = shape_errors(raw, self.schema)
         self.raw = fill_defaults(raw, self.schema)
         self.config = PluginConfig.from_raw(self.raw)
+        self.agenda_catalog_errors = list(Agenda(self.raw["agenda"], max_events=1000).errors)
+        group_ids = [g.get("agenda_id", "") for g in self.raw["session_groups"] if isinstance(g.get("agenda_id"), str) and g["agenda_id"]]
+        if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", ident) for ident in group_ids):
+            self.shape_errors.append(("session_groups.agenda_id", "日程分组标识使用 1～80 位字母、数字、下划线或短横线。"))
+        if len(set(group_ids)) != len(group_ids):
+            self.shape_errors.append(("session_groups.agenda_id", "日程分组标识重复，无法安全区分会话组。"))
+        for i, event in enumerate(self.raw["agenda"]["events"]):
+            if event.get("group_id") and event["group_id"] not in group_ids:
+                self.agenda_catalog_errors.append((f"agenda.events[{i}].group_id", "未找到适用会话组标识；请关联现有组，不会自动退回全局。"))
         self.scope_error = ""
         try:
             self.scopes = SessionScopes(self.config)
@@ -106,6 +124,7 @@ class Settings:
             self.scopes = SessionScopes(PluginConfig.from_raw({**self.raw, "session_groups": []}))
         global_raw = copy.deepcopy(self.raw)
         global_raw["session_groups"] = []
+        global_raw["agenda"]["events"] = [e for e in global_raw["agenda"]["events"] if not e.get("group_id")]
         self.global_entry = self._entry(global_raw)
         self.warnings = []
         for index, group in enumerate(self.config.groups):
@@ -118,6 +137,8 @@ class Settings:
             merged = copy.deepcopy(global_raw)
             inter = item.get("interjection_overrides", {})
             pro = item.get("proactive_overrides", {})
+            overlay(merged["interjection"]["decision"], item.get("decision_overrides", {}),
+                    self.schema["interjection"]["items"]["decision"]["items"])
             overlay(merged["interjection"], inter, self.schema["interjection"]["items"])
             for section in ("weights", "activity", "energy"):
                 overlay(merged["interjection"][section], item.get("interjection_" + section, {}),
@@ -139,7 +160,20 @@ class Settings:
             merged["enabled"] = self.config.enabled
             merged["interjection"]["enabled"] = inter_on
             merged["proactive_chat"]["enabled"] = pro_on
-            entry = self._entry(merged)
+            exclusions = item.get("agenda_exclusions", [])
+            excluded = {v for v in exclusions if isinstance(v, str)} if isinstance(exclusions, list) else set()
+            global_events = [e for e in global_raw["agenda"]["events"] if not isinstance(e["id"], str) or e["id"] not in excluded]
+            local_events = [e for e in self.raw["agenda"]["events"] if item.get("agenda_id") and e.get("group_id") == item["agenda_id"]]
+            merged["agenda"]["events"] = copy.deepcopy(global_events + local_events)
+            merged["agenda"]["enabled"] = feature_enabled(item.get("agenda_mode"), global_raw["agenda"]["enabled"])
+            entry = self._entry(merged, {e["id"]: "本组" for e in local_events if isinstance(e["id"], str)})
+            if item.get("agenda_mode") not in {"跟随全局", "开启", "关闭"}:
+                entry.errors["agenda"].append(("agenda_mode", "请选择跟随全局、开启或关闭。"))
+            if len(local_events) > 100:
+                entry.errors["agenda"].append(("agenda.events", "每组最多 100 条新增日程。"))
+            global_ids = {e["id"] for e in global_raw["agenda"]["events"] if isinstance(e["id"], str)}
+            if any(isinstance(e["id"], str) and e["id"] in global_ids for e in local_events):
+                entry.errors["agenda"].append(("agenda.events", "本组日程标识不能与全局重复，即使该全局日程已排除。"))
             self.groups.append(entry)
             for key in ("interjection_mode", "proactive_mode"):
                 if item.get(key) not in {"跟随全局", "开启", "关闭"}:
@@ -152,6 +186,8 @@ class Settings:
         entries = self.groups if self.config.groups else [self.global_entry]
         for entry in entries:
             cfg = entry.config
+            if feature in (None, "agenda") and entry.agenda.enabled and entry.valid("agenda"):
+                return True
             if cfg.enabled and any(
                 (name == feature or feature is None) and getattr(cfg, name + "_enabled") and entry.valid(name)
                 for name in ("interjection", "proactive")
@@ -159,9 +195,13 @@ class Settings:
                 return True
         return False
 
-    def _entry(self, raw):
+    def _entry(self, raw, origins=None):
         config = PluginConfig.from_raw(raw)
         errors = validate_config(config, raw)
+        agenda = Agenda(raw.get("agenda", {}), origins=origins, timezone_name=config.timezone)
+        errors["agenda"] = agenda.errors
+        if origins is None and len(raw.get("agenda", {}).get("events", [])) > 100:
+            errors["agenda"].append(("agenda.events", "全局最多 100 条日程。"))
         errors["shared"].extend(self.shape_errors)
         if self.scope_error:
             errors["shared"].append(("session_groups.sids", self.scope_error))
@@ -170,7 +210,7 @@ class Settings:
             value = self.raw.get("diagnostics", {}).get(key)
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
                 errors["shared"].append(("diagnostics." + key, f"请输入 {low}～{high} 的整数。"))
-        return EffectiveSettings(raw, config, errors)
+        return EffectiveSettings(raw, config, errors, agenda)
 
     def for_group(self, group):
         return self._by_identity.get(id(group), self.global_entry)
@@ -180,6 +220,8 @@ class Settings:
 
     def all_errors(self):
         result = {"全局": self.global_entry.errors}
+        if self.agenda_catalog_errors:
+            result["日程目录"] = {"agenda": self.agenda_catalog_errors}
         result.update({f"会话组 {index + 1}": entry.errors for index, entry in enumerate(self.groups)})
         return {name: errors for name, errors in result.items() if any(errors.values())}
 
@@ -188,6 +230,9 @@ class Settings:
         if not self.groups:
             return self.all_errors()
         result = {f"会话组 {i+1}":entry.errors for i, entry in enumerate(self.groups) if any(entry.errors.values())}
-        if self.global_entry.errors["shared"]:
-            result["全局"] = {"shared":self.global_entry.errors["shared"]}
+        if self.agenda_catalog_errors:
+            result["日程目录"] = {"agenda": self.agenda_catalog_errors}
+        global_errors = {key: self.global_entry.errors[key] for key in ("shared", "agenda") if self.global_entry.errors[key]}
+        if global_errors:
+            result["全局"] = global_errors
         return result

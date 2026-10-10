@@ -1,10 +1,15 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>主动会话 · 配置与观察</title><link rel="stylesheet" href="./style.css"><script src="./ui.js" defer></script><script src="./app.js" defer></script></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>主动会话 · 配置与观察</title><link rel="stylesheet" href="./style.css"><script src="./ui.js" defer></script><script src="./placeholders.js" defer></script><script src="./agenda.js" defer></script><script src="./changes.js" defer></script><script src="./app.js" defer></script></head>
 <body><div class="shell">
-<aside class="rail"><div class="brand"><span class="brand-mark" aria-hidden="true">聊</span><div><strong>主动会话</strong><small>让每次开口都合时宜</small></div></div><nav id="nav" aria-label="功能导航"></nav><div class="rail-foot"><button id="tutorial">新手引导</button><p>原生人格与历史<br>由规则决定何时开口</p></div></aside>
-<div class="workspace"><header><div><h1 id="title">正在连接</h1><span id="connection" class="muted">等待 AstrBot 页面接口</span></div><div class="toolbar"><span id="dirty" class="tag pending" hidden>有未保存修改</span><label class="theme-label">外观<select id="theme" aria-label="外观"><option value="auto">跟随框架</option><option value="light">浅色</option><option value="dark">深色</option></select></label><button id="reload">重新载入</button><button id="save" class="primary" disabled>保存并生效</button></div></header>
+<aside class="rail"><div class="brand"><span class="brand-mark" aria-hidden="true">聊</span><div><strong>主动会话</strong><small>让每次开口都合时宜</small></div></div><nav id="nav" aria-label="功能导航"></nav><div class="rail-foot"><button id="tutorial">新手引导</button><p>沿用原会话的人格与历史<br>设置机器人何时主动开口</p></div></aside>
+<div class="workspace"><header>
+<h1 id="title">正在连接</h1>
+<div class="toolbar"><label class="theme-label">外观<select id="theme" aria-label="外观"><option value="auto">跟随框架</option><option value="light">浅色</option><option value="dark">深色</option></select></label><button id="reload">重新载入</button><button id="save" class="primary" disabled>保存并生效</button></div>
+<span id="connection" class="muted">等待 AstrBot 页面接口</span>
+<div class="dirty-slot"><div id="dirty-summary" class="dirty-summary" hidden><div class="dirty-heading"><span id="dirty" class="tag pending" hidden>有未保存修改</span><small id="dirty-count" title="右侧列表可横向滚动查看全部修改位置"></small></div><ul id="dirty-locations" tabindex="0" aria-label="相对于上次保存的修改位置，可横向滚动查看全部" aria-live="polite" aria-relevant="additions removals text"></ul></div></div>
+</header>
 <div id="notice" role="status" aria-live="polite" hidden></div>
 <div id="scope-bar" class="scope-bar" hidden><label>正在编辑 <select id="scope" aria-label="编辑范围"></select></label><div><strong id="scope-note"></strong><small id="scope-effective"></small></div></div>
-<main id="content"><div class="empty">请从已登录的 AstrBot Dashboard 打开本页面。连接后即可配置和查看决策，不会自动发送测试消息。</div></main>
-<footer>判断材料与原生 Agent 上下文分开管理。回放仅为已隐藏媒体编码的文字快照，不是完整网络报文。</footer>
+<main id="content"><div class="empty">请从已登录的 AstrBot 管理界面打开本页面。连接后即可修改配置、查看运行记录；页面不会自动发送测试消息。</div></main>
+<footer>修改后请点击“保存并生效”。判断用的参考资料不等于机器人回复时的全部上下文；回放只展示处理后的文字记录。</footer>
 </div></div></body></html>
