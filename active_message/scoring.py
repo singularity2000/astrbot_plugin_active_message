@@ -13,6 +13,11 @@ def clamp01(value: float) -> float:
     return max(0.0, min(1.0, number))
 
 
+def exceeds_threshold(score: float, threshold: float) -> bool:
+    """Ignore rounding noise at equality, matching the Pages score calculator."""
+    return score > threshold and not math.isclose(score, threshold, rel_tol=0.0, abs_tol=1e-12)
+
+
 def normalize_weighted_score(
     scores: Iterable[float],
     weights: Iterable[float],

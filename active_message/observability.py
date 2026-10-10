@@ -9,6 +9,7 @@ from typing import Any
 MESSAGES = {
     "AGENDA_TIMEZONE_INVALID": "日程时区无效，预览回退到系统时区；请修正配置。",
     "AGENDA_CONTEXT_UNSUPPORTED": "框架缺少临时消息内容接口；未注入日程，避免污染历史。请升级 AstrBot。",
+    "AGENDA_LINKS_SAVE_FAILED": "内部日程关联未能保存；插件已暂停，请检查配置写入权限后重载，或在 Pages 重新保存配置。",
     "EMPTY_SESSION_GROUP": "空会话组没有目标；列表非空时仍为白名单模式。",
     "IMAGE_CONTEXT_UNAVAILABLE": "当前框架无法只读提供待注入的群图片转述；保留原历史与媒体标签，不重复识图。",
     "JUDGMENT_INPUT": "判断输入已按预算准备；token 为估算值，不等于服务实际计费。",

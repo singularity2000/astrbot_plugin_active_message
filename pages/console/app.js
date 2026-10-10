@@ -102,7 +102,6 @@
       recent_messages:'需要 AstrBot 已开启群消息历史保存；0 表示先选全部。',
       missing_group_history:'skip 更稳妥；runtime 会使用可能不完整的插件短期摘要。',
       agenda_mode:'跟随全局、只开启或只关闭本组日程意识；关闭不会删除日程。',
-      category:'机器人日程是角色安排；会话事项是群聊或私聊中的活动、约定。',
       repeat:'不重复、每天、每周、每年或 Cron；不熟悉 Cron 时建议选每天或每周。',
       time_mode:'全天整天有效；时段按起止时间有效，结束早于开始表示跨午夜。',
       pause_interjection:'勾选后，日程期间暂停插件自行插话；正常 @ 回复不受影响。',
@@ -306,14 +305,22 @@
     }
     const result=el('div');result.id='score-result';box.append(sliders,result);root.append(box);drawScore();
   }
+  function displayScore(score,threshold) {
+    const value=Math.abs(score-threshold)<=1e-12?threshold:score,rounded=value.toFixed(4);
+    // Show more digits only when rounding would contradict the comparison sign.
+    return (Number(rounded)>threshold)===(value>threshold)?rounded:String(value);
+  }
   function drawScore() {
     const box=$('score-result');if(!box)return;box.replaceChildren();const cfg=state.effective?.interjection;
     if(!cfg){box.append(el('p','等待计算当前生效参数…'));return;}
     const weights=cfg.weights,denom=Object.values(weights).reduce((a,b)=>a+Math.abs(Number(b)),0);
     if(!denom||!Number.isFinite(denom)){box.append(el('p','请先设置至少一个非零的有效权重。','warning'));return;}
     let score=0;const table=el('table'),head=el('tr');['评分项目','示例分数','当前权重','计入总分的分值'].forEach(x=>head.append(el('th',x)));table.append(head);
-    for(const [key,label] of [['model','模型'],['activity','活跃'],['energy','精力']]){const w=Number(weights[key]),raw=state.samples[key],contribution=Math.abs(w)*(w<0?1-raw:raw)/denom;score+=contribution;const tr=el('tr');[label,raw,w,contribution.toFixed(4)].forEach(x=>tr.append(el('td',String(x))));table.append(tr);}
-    const hit=score>Number(cfg.threshold),result=el('p','最终分 '+score.toFixed(4)+(hit?' > ':' ≤ ')+'当前阈值 '+cfg.threshold+'：'+(hit?'评分通过':'评分未通过'),'score-outcome');
+    for(const [key,label] of [['model','模型'],['activity','活跃'],['energy','精力']]){const w=Number(weights[key]),raw=state.samples[key],weighted=Math.abs(w)*(w<0?1-raw:raw);score+=weighted;const tr=el('tr');[label,raw,w,(weighted/denom).toFixed(4)].forEach(x=>tr.append(el('td',String(x))));table.append(tr);}
+    score=Math.max(0,Math.min(1,score/denom));
+    const threshold=Number(cfg.threshold),hit=score>threshold&&Math.abs(score-threshold)>1e-12;
+    const displayed=displayScore(score,threshold);
+    const result=el('p','最终分 '+displayed+(hit?' > ':' ≤ ')+'当前阈值 '+cfg.threshold+'：'+(hit?'评分通过':'评分未通过'),'score-outcome');
     result.classList.toggle('pass',hit);box.append(table,result,el('small','负权重会先把该项变成 1−原分。评分通过后，仍要检查开关、发言后等待时间和聊天助手状态。','muted'));
   }
   const phaseLabels={decision:'判断提示词／判断补充模板',activation:'智能插话发言提示词',proactive:'主动聊天提示词／任务说明'};
@@ -352,7 +359,7 @@
     const runId=state.run.run_id,index=state.step,seq=++state.traceSeq;detail.append(el('p','正在读取这一步…','muted'));
     api('trace',undefined,{run_id:runId,step:index}).then(step=>{
       if(seq!==state.traceSeq||state.tab!=='traces')return;detail.replaceChildren(el('h3',step.label),el('small',new Date(step.at*1000).toLocaleString()+' · '+step.state));
-      if(step.data?.score?.final!==undefined){const score=step.data.score;detail.append(el('p','最终分 '+Number(score.final).toFixed(4)+(step.data.triggered?' > ':' ≤ ')+'阈值 '+step.data.threshold,'score-outcome'));}
+      if(step.data?.score?.final!==undefined){const score=step.data.score;detail.append(el('p','最终分 '+displayScore(Number(score.final),Number(step.data.threshold))+(step.data.triggered?' > ':' ≤ ')+'阈值 '+step.data.threshold,'score-outcome'));}
       if(step.data!==undefined){const copy=el('button','复制这一步');copy.onclick=()=>copyText(JSON.stringify(step.data,null,2),notice);detail.append(copy,el('pre',JSON.stringify(step.data,null,2)));}
       else detail.append(el('p','本步没有保留正文。若未开启文字快照，可在“上下文与诊断”中开启后等待下一次运行。','muted'));
     }).catch(error=>{if(seq===state.traceSeq){detail.replaceChildren(el('p',error.message,'warning'));}});

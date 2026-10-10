@@ -12,9 +12,11 @@
   --teal:#167b80;
   --warning:#8b5a11;
   --warning-bg:#fff5df;
+  --override:#a65f08;
+  --override-soft:#fff0d2;
   --danger:#ac3449;
   --focus:#346dca;
-  --radius:10px;
+  --radius:3px;
   --rail-width:168px;
   --dock-height:0px;
   font:15px/1.6 "Segoe UI Variable","Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif
@@ -32,6 +34,8 @@
   --teal:#82d8cf;
   --warning:#ffcf83;
   --warning-bg:#493b28;
+  --override:#ffbd5b;
+  --override-soft:#42311d;
   --danger:#ffa0b1;
   --focus:#adcaff
 }
@@ -51,7 +55,7 @@ button,input,select,textarea {
 }
 button,select,input,textarea {
   border:1px solid var(--line);
-  border-radius:7px;
+  border-radius:3px;
   background:var(--surface);
   color:var(--text)
 }
@@ -156,7 +160,7 @@ pre {
   padding:15px;
   background:var(--bg);
   border:1px solid var(--line);
-  border-radius:8px;
+  border-radius:3px;
   font:12px/1.7 Consolas,monospace
 }
 .muted {
@@ -166,7 +170,7 @@ pre {
   color:var(--warning);
   background:var(--warning-bg);
   padding:10px 14px;
-  border-radius:7px
+  border-radius:3px
 }
 .empty {
   color:var(--muted);
@@ -203,7 +207,7 @@ pre {
 .brand-mark {
   background:var(--accent-soft);
   color:var(--accent);
-  border-radius:12px 12px 12px 3px;
+  border-radius:4px 12px 12px 3px;
   display:grid;
   place-items:center;
   width:40px;
@@ -219,7 +223,7 @@ pre {
   text-align:left;
   border-color:transparent;
   padding:11px 14px;
-  border-radius:8px
+  border-radius:3px
 }
 .rail nav button[aria-current=page] {
   color:var(--accent);
@@ -229,15 +233,12 @@ pre {
   padding-left:12px
 }
 .rail-foot {
-  margin-top:auto
+  margin-top:auto;
+  display:grid;
+  gap:8px
 }
 .rail-foot button {
   width:100%
-}
-.rail-foot p {
-  font-size:12px;
-  color:var(--muted);
-  margin:15px 10px 0
 }
 .workspace {
   min-width:0
@@ -276,6 +277,8 @@ header h1 {
   margin-left:6px;
   min-height:34px
 }
+.rail-foot .theme-label { display:flex; align-items:center; gap:6px; }
+.rail-foot .theme-label select { flex:1; min-width:0; width:0; max-width:none; margin-left:0; }
 .tag {
   display:inline-block;
   padding:3px 9px;
@@ -283,7 +286,7 @@ header h1 {
   border:1px solid var(--line);
   color:var(--muted);
   font-size:12px;
-  border-radius:5px
+  border-radius:3px
 }
 .tag.pending {
   color:var(--warning);
@@ -307,7 +310,7 @@ header h1 {
   background:var(--accent-soft);
   border:1px solid var(--line);
   border-left:4px solid var(--accent);
-  border-radius:8px;
+  border-radius:3px;
   display:flex;
   gap:22px;
   align-items:center
@@ -327,7 +330,7 @@ header h1 {
   border-left-color:var(--teal)
 }
 main {
-  max-width:1500px;
+  max-width:none;
   margin:0 auto;
   padding:24px 30px 40px
 }
@@ -359,7 +362,7 @@ main {
   font-size:13px;
   padding:8px 12px;
   background:var(--surface-2);
-  border-radius:6px
+  border-radius:3px
 }
 .flow span:not(:last-child)::after {
   content:'›';
@@ -404,7 +407,7 @@ main {
 }
 .form-section {
   border:1px solid var(--line);
-  border-radius:8px;
+  border-radius:3px;
   margin:16px 0;
   padding:0 18px
 }
@@ -418,9 +421,10 @@ main {
   border-top:1px solid var(--line)
 }
 .section .section {
-  border-radius:8px;
+  border-radius:0;
+  border-width:1px 0 0;
   margin:18px 0 0;
-  padding:18px
+  padding:14px 0 0
 }
 .list-control {
   display:grid;
@@ -446,7 +450,7 @@ main {
 .validation-summary {
   background:var(--surface);
   border:1px solid var(--danger);
-  border-radius:8px;
+  border-radius:3px;
   padding:18px;
   overflow-wrap:anywhere;
   font-size:13px
@@ -537,7 +541,7 @@ td.sid {
 .timebar {
   display:flex;
   height:32px;
-  border-radius:7px;
+  border-radius:3px;
   overflow:hidden;
   margin:22px 0 5px
 }
@@ -570,7 +574,7 @@ td.sid {
   min-width:0;
   border:1px solid var(--line);
   background:var(--surface);
-  border-radius:8px;
+  border-radius:3px;
   padding:12px
 }
 .trace-list,.trace-steps {
@@ -616,7 +620,7 @@ td.sid {
   overflow:auto;
   background:var(--surface);
   border:1px solid var(--line);
-  border-radius:14px;
+  border-radius:6px;
   padding:28px;
   box-shadow:0 20px 70px rgba(0,0,0,.25)
 }
@@ -652,7 +656,7 @@ footer {
   padding:0 30px 25px;
   font-size:12px;
   color:var(--muted);
-  max-width:1000px
+  max-width:none
 }
 @media(min-width:1500px) {
   .field {
@@ -738,12 +742,8 @@ footer {
     padding-left:11px
   }
   .rail-foot {
-    position:absolute;
-    right:16px;
-    top:22px
-  }
-  .rail-foot p {
-    display:none
+    position:static;
+    width:min(220px,100%)
   }
   .rail-foot button {
     font-size:12px;
@@ -844,7 +844,7 @@ footer {
 .tour-highlight {
   position:fixed;
   border:3px solid var(--focus);
-  border-radius:12px;
+  border-radius:4px;
   box-shadow:0 0 0 9999px rgba(17,33,55,.6);
   pointer-events:none;
   z-index:-1
@@ -906,8 +906,8 @@ footer {
     line-height:1.7
   }
   .rail {
-    padding:20px 10px;
-    gap:20px
+    padding:16px 10px;
+    gap:16px
   }
   .brand strong {
     font-size:17px
@@ -922,7 +922,7 @@ footer {
     gap:4px
   }
   .rail nav button {
-    padding:8px 11px
+    padding:7px 10px
   }
   .rail nav button[aria-current=page] {
     padding-left:9px
@@ -940,16 +940,16 @@ footer {
     padding:10px 12px
   }
   .scope-bar {
-    margin:14px 22px 0;
-    padding:10px 14px;
-    gap:12px
+    margin:10px 18px 0;
+    padding:8px 12px;
+    gap:10px
   }
   main {
-    padding:18px 22px 28px
+    padding:14px 18px 24px
   }
   .section {
-    padding:16px;
-    margin-bottom:14px
+    padding:12px;
+    margin-bottom:10px
   }
   .section>p.muted {
     font-size:13px
@@ -967,23 +967,23 @@ footer {
     margin:9px 0
   }
   .field {
-    padding:11px 0;
-    gap:10px 16px
+    padding:8px 0;
+    gap:8px 14px
   }
   .field-label>label {
     font-size:13px
   }
   .form-section {
-    margin:12px 0;
-    padding:0 14px
+    margin:10px 0;
+    padding:0 12px
   }
   .form-section>summary {
     font-size:14px;
     padding:10px 0
   }
   .section .section {
-    margin-top:14px;
-    padding:14px
+    margin-top:10px;
+    padding:10px 0 0
   }
   .list-control {
     gap:8px
@@ -995,22 +995,22 @@ footer {
     padding:14px
   }
   td,th {
-    padding:8px 10px
+    padding:6px 10px
   }
   .score-sliders {
-    gap:16px;
-    padding:10px 0
+    gap:14px;
+    padding:6px 0
   }
   .score-outcome {
-    padding:10px 12px;
-    margin:12px 0 7px
+    padding:8px 10px;
+    margin:10px 0 6px
   }
   .placeholder-grid {
-    gap:10px;
-    margin-top:12px
+    gap:8px;
+    margin-top:10px
   }
   .placeholder-card {
-    padding:10px 8px
+    padding:8px 6px
   }
   .timebar {
     height:28px;
@@ -1066,14 +1066,15 @@ footer {
 .template-field { grid-template-columns:minmax(0,1fr); gap:8px; }
 .template-field textarea { min-height:110px; }
 .effective { display:flex; flex-wrap:wrap; gap:5px 9px; align-items:center; font-size:12px; margin-top:7px; overflow-wrap:anywhere; }
-.override-badge { display:inline-flex; align-items:center; padding:3px 8px; border-radius:5px; background:var(--accent-soft); border:1px solid var(--accent); color:var(--accent); font-size:12px; font-weight:650; }
+.override-badge { display:inline-flex; align-items:center; padding:3px 8px; border-radius:3px; background:var(--override-soft); border:1px solid var(--override); color:var(--override); font-size:12px; font-weight:650; }
 .field:not(.overridden) .override-badge { border-color:var(--line); background:var(--surface-2); color:var(--muted); font-weight:400; }
-.field.overridden { border-left:3px solid var(--accent); padding-left:12px; }
+.field.overridden { border-left:3px solid var(--override); padding-left:10px; }
+.field.overridden .override-badge { background:var(--override-soft); border-color:var(--override); color:var(--override); }
 .effective-value { color:var(--muted); }
 .inherit-reset { padding:2px 7px; font-size:12px; }
 .override-summary { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; }
 .only-overrides .field:not(.overridden) { display:none; }
-.group-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; align-items:start; }
+.group-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; align-items:start; }
 .group-card { min-width:0; margin:0; }
 .group-card h2 { font-size:17px; overflow-wrap:anywhere; }
 .group-card .field { grid-template-columns:132px minmax(0,1fr); gap:10px; }
@@ -1085,7 +1086,7 @@ footer {
 .dragging { opacity:.5; }
 .drop-target { outline:2px dashed var(--accent); outline-offset:3px; }
 /* The dock is a temporary tool surface, not another configuration section. */
-.placeholder-dock { position:fixed; z-index:40; left:calc(var(--rail-width) + 22px); right:22px; bottom:12px; padding:12px; background:var(--surface); border:1px solid var(--accent); border-radius:10px; box-shadow:0 -3px 22px #0002; }
+.placeholder-dock { position:fixed; z-index:40; left:calc(var(--rail-width) + 22px); right:22px; bottom:12px; padding:12px; background:var(--surface); border:1px solid var(--accent); border-radius:4px; box-shadow:0 -3px 22px #0002; }
 .dock-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
 .dock-head strong { flex:1; font-size:13px; }
 .dock-head input { width:230px; }
@@ -1111,13 +1112,12 @@ textarea,input { scroll-margin-bottom:calc(var(--dock-height) + 24px); }
 .calendar-month-picker { width:145px; min-width:0; }
 .calendar-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); border-left:1px solid var(--line); border-top:1px solid var(--line); margin:12px 0; }
 .calendar-weekday { text-align:center; background:var(--surface-2); padding:8px 0; border-right:1px solid var(--line); border-bottom:1px solid var(--line); font-size:12px; }
-.calendar-day { display:flex; flex-direction:column; gap:4px; min-width:0; min-height:110px; padding:7px; text-align:left; border:0; border-right:1px solid var(--line); border-bottom:1px solid var(--line); border-radius:0; background:var(--surface); }
+.calendar-day { display:flex; flex-direction:column; gap:3px; min-width:0; min-height:94px; padding:5px; text-align:left; border:0; border-right:1px solid var(--line); border-bottom:1px solid var(--line); border-radius:0; background:var(--surface); }
 .calendar-day.outside-month { background:var(--bg); color:var(--muted); }
 .calendar-date { align-self:flex-start; display:inline-flex; width:24px; height:24px; justify-content:center; align-items:center; border-radius:50%; font-size:13px; }
 .calendar-day.is-today .calendar-date { background:var(--accent); color:var(--surface); font-weight:700; }
 .calendar-day.selected { box-shadow:inset 0 0 0 2px var(--accent); }
 .calendar-event { display:block; max-width:100%; padding:2px 4px; border-radius:3px; font-size:11px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; background:var(--accent-soft); color:var(--accent); border-left:2px solid var(--accent); }
-.calendar-event.role-event { border-left-color:var(--teal); color:var(--teal); background:var(--surface-2); }
 .calendar-details { padding-top:10px; }
 .calendar-detail { border-top:1px solid var(--line); padding:10px 0; }
 .calendar-detail .tag { margin-left:8px; }
@@ -1127,8 +1127,8 @@ textarea,input { scroll-margin-bottom:calc(var(--dock-height) + 24px); }
 .agenda-editor-field { min-width:0; }
 .agenda-editor-field>label,.agenda-editor-field>legend { display:block; font-size:13px; font-weight:600; margin-bottom:5px; }
 .agenda-editor-field>input:not([type=checkbox]),.agenda-editor-field>select,.agenda-editor-field>textarea { width:100%; }
-.agenda-editor-field[data-event-field=description],.agenda-editor-field[data-event-field=weekdays],.agenda-editor>.warning { grid-column:1/-1; }
-.weekday-picker { border:1px solid var(--line); border-radius:7px; display:flex; gap:12px; flex-wrap:wrap; padding:10px; }
+.agenda-editor-field[data-event-field=title],.agenda-editor-field[data-event-field=description],.agenda-editor-field[data-event-field=weekdays],.agenda-editor>.warning { grid-column:1/-1; }
+.weekday-picker { border:1px solid var(--line); border-radius:3px; display:flex; gap:12px; flex-wrap:wrap; padding:10px; }
 .weekday-picker label { display:flex; gap:5px; align-items:center; font-size:13px; }
 .weekday-picker input { margin:0; }
 @media(min-width:701px) and (max-width:1100px) { :root { --rail-width:156px; } .group-grid { grid-template-columns:minmax(0,1fr); } }
@@ -1154,7 +1154,7 @@ header {
   grid-template-areas:"title actions" "connection changes";
   align-items:center;
   gap:4px 18px;
-  padding:10px 22px;
+  padding:10px 18px;
 }
 header h1 { grid-area:title; margin:0; }
 header .toolbar { grid-area:actions; min-width:0; flex-wrap:nowrap; justify-content:flex-end; }
@@ -1188,12 +1188,12 @@ header .toolbar>* { flex-shrink:0; white-space:nowrap; }
 
 /* Explanations float above content; opening help never changes the form layout. */
 .help-control { display:inline-flex; flex:none; vertical-align:middle; font-weight:400; }
-.help-control>.help-trigger { display:inline-flex; align-items:center; justify-content:center; flex:none; width:32px; height:32px; min-height:32px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:help; touch-action:manipulation; }
+.help-control>.help-trigger { display:inline-flex; align-items:center; justify-content:center; flex:none; width:32px; height:32px; min-height:32px; padding:0; border:0; border-radius:3px; background:transparent; color:var(--muted); cursor:help; touch-action:manipulation; }
 .help-icon { display:grid; place-items:center; width:17px; height:17px; border:1.5px solid currentColor; border-radius:50%; font:600 12px/1 "Segoe UI",sans-serif; }
 .help-trigger:hover,.help-trigger[aria-expanded=true] { color:var(--accent); background:var(--accent-soft); }
 .help-trigger:focus-visible { outline:2px solid var(--focus); outline-offset:1px; }
 .help-description { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
-.help-popup { position:fixed; z-index:1100; box-sizing:border-box; padding:13px 15px; border:1px solid var(--line); border-radius:9px; background:var(--surface); color:var(--text); box-shadow:0 5px 22px rgba(17,33,55,.18); overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; text-align:left; font-size:13px; line-height:1.65; overflow-wrap:anywhere; }
+.help-popup { position:fixed; z-index:1100; box-sizing:border-box; padding:13px 15px; border:1px solid var(--line); border-radius:3px; background:var(--surface); color:var(--text); box-shadow:0 5px 22px rgba(17,33,55,.18); overflow:auto; overscroll-behavior:auto; scrollbar-width:thin; text-align:left; font-size:13px; line-height:1.65; overflow-wrap:anywhere; }
 .help-popup>strong { display:block; font-size:13px; margin-bottom:7px; }
 .help-text { white-space:pre-wrap; user-select:text; }
 .field-label,.help-label { display:flex; align-items:center; gap:3px; min-width:0; flex-wrap:wrap; }
@@ -1208,7 +1208,7 @@ header .toolbar>* { flex-shrink:0; white-space:nowrap; }
 }
 
 .field-hint { flex-basis:100%; margin:2px 0 0; color:var(--muted); font-size:12px; font-weight:400; line-height:1.55; overflow-wrap:anywhere; }
-.section>p.muted { max-width:78ch; }
+.section>p.muted { max-width:none; }
 .help-note { line-height:1.55; }
 
 /* Keep placeholder help on the title row, not a separate content row. */

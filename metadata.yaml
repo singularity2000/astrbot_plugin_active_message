@@ -2,7 +2,7 @@ name: astrbot_plugin_active_message
 display_name: 主动会话插件
 short_desc: 智能插话与主动聊天，让机器人更懂什么时候该说话。
 desc: AstrBot主动会话插件，支持智能插话与主动聊天，让机器人更智能、更拟真。
-version: v1.2.0
+version: v1.2.1
 author: singularity2000
 tags: ["主动插话", "主动聊天", "智能判断", "Jev"]
 repo: https://github.com/singularity2000/astrbot_plugin_active_message

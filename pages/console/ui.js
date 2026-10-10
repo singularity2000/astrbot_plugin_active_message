@@ -54,6 +54,17 @@
   function helpNote(label,text){const note=node('span',undefined,'help-note');note.append(node('span',label),help(label,text));return note;}
   helpPopup.addEventListener('pointerenter',()=>{helpPointer=true;clearTimeout(helpTimer);});
   helpPopup.addEventListener('pointerleave',()=>{helpPointer=false;deferHelpClose();});
+  // Fixed help surfaces do not natively chain wheel events to a scrolling dialog.
+  // Read long help normally; at either boundary, pass the wheel to its dialog.
+  helpPopup.addEventListener('wheel',event=>{
+    const modal=helpActive?.button.closest('.modal');
+    if(!modal||event.ctrlKey||!event.deltaY||Math.abs(event.deltaX)>Math.abs(event.deltaY))return;
+    const canScrollHelp=event.deltaY<0?helpPopup.scrollTop>0:helpPopup.scrollTop+helpPopup.clientHeight<helpPopup.scrollHeight-1;
+    if(canScrollHelp)return;
+    const unit=event.deltaMode===1?parseFloat(getComputedStyle(helpPopup).lineHeight):event.deltaMode===2?modal.clientHeight:1;
+    const before=modal.scrollTop;modal.scrollTop+=event.deltaY*unit;
+    if(modal.scrollTop!==before)event.preventDefault();
+  },{passive:false});
   document.addEventListener('pointerdown',event=>{if(helpActive&&!helpActive.button.contains(event.target)&&!helpPopup.contains(event.target))hideHelp();},true);
   document.addEventListener('focusin',event=>{if(helpActive&&!helpActive.button.contains(event.target)&&!helpPopup.contains(event.target))hideHelp();});
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&helpActive){event.preventDefault();event.stopImmediatePropagation();hideHelp();}},true);

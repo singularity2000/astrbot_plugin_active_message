@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from .config import PluginConfig
 from .sessions import SessionScopes
 from .validation import validate_config
-from .agenda import Agenda
+from .agenda import Agenda, normalize_agenda_links, populate_agenda_choices
 
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "_conf_schema.json"
 
@@ -106,6 +106,9 @@ class Settings:
         self.schema = schema()
         self.shape_errors = shape_errors(raw, self.schema)
         self.raw = fill_defaults(raw, self.schema)
+        self.agenda_links_changed = normalize_agenda_links(self.raw)
+        if not self.shape_errors:
+            populate_agenda_choices(self.schema, self.raw)
         self.config = PluginConfig.from_raw(self.raw)
         self.agenda_catalog_errors = list(Agenda(self.raw["agenda"], max_events=1000).errors)
         group_ids = [g.get("agenda_id", "") for g in self.raw["session_groups"] if isinstance(g.get("agenda_id"), str) and g["agenda_id"]]
@@ -115,7 +118,7 @@ class Settings:
             self.shape_errors.append(("session_groups.agenda_id", "日程分组标识重复，无法安全区分会话组。"))
         for i, event in enumerate(self.raw["agenda"]["events"]):
             if event.get("group_id") and event["group_id"] not in group_ids:
-                self.agenda_catalog_errors.append((f"agenda.events[{i}].group_id", "未找到适用会话组标识；请关联现有组，不会自动退回全局。"))
+                self.agenda_catalog_errors.append((f"agenda.events[{i}].group_id", "原会话组不存在，请重新选择日程适用范围；不会自动变成全局日程。"))
         self.scope_error = ""
         try:
             self.scopes = SessionScopes(self.config)

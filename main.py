@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.2.0"
+PLUGIN_VERSION = "1.2.1"
 
 import asyncio
 import json
@@ -19,7 +19,9 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.platform.message_type import MessageType
 
 from .active_message.alarm import DeadlineAlarm
-from .active_message.agenda import context_text
+from .active_message.agenda import (
+    context_text, persist_agenda_links, publish_agenda_schema,
+)
 from .active_message.context_input import ContextUnavailable, read_context
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
@@ -37,7 +39,7 @@ from .active_message.prompts import make_values, render_system_template
 from .active_message.runtime import RuntimeStore
 from .active_message.storage import JsonStateFile
 from .active_message.schedule import current_mood, get_timezone
-from .active_message.scoring import build_score_breakdown, calculate_activity_score, calculate_energy_score
+from .active_message.scoring import build_score_breakdown, calculate_activity_score, calculate_energy_score, exceeds_threshold
 
 PLUGIN_ID = "astrbot_plugin_active_message"
 META_KEY = "_active_message_meta"
@@ -160,8 +162,19 @@ class ActiveMessagePlugin(Star):
 
     async def initialize(self) -> None:
         """Validate effective settings once; a bad group does not disable other groups."""
+        links_ready = not self.settings.shape_errors
+        if links_ready:
+            try:
+                if self.settings.agenda_links_changed:
+                    await persist_agenda_links(self.config_raw, self.settings.raw)
+            except Exception as exc:
+                links_ready = False
+                self.observer.error("AGENDA_LINKS_SAVE_FAILED", exc)
+                for entry in [self.settings.global_entry, *self.settings.groups]:
+                    entry.errors["agenda"].append(("agenda", "日程关联信息未能保存，请检查写入权限后重载，或在 Pages 重新保存配置。"))
+        publish_agenda_schema(self.config_raw, self.settings.schema)
         self._config_errors = self.settings.blocking_errors()
-        self._valid = not self._scope_error and not self.settings.shape_errors
+        self._valid = links_ready and not self._scope_error and not self.settings.shape_errors
         self._interjection_valid = self.settings.global_entry.valid("interjection")
         self._proactive_valid = self.settings.global_entry.valid("proactive")
         for scope, sections in self._config_errors.items():
@@ -404,8 +417,8 @@ class ActiveMessagePlugin(Star):
             threshold = cfg.threshold
             self.observer.log("debug", "DECISION_COMPLETED", sid=sid, run_id=run_id, model=decision.model,
                               score=score.as_dict(), threshold=threshold, latency_ms=round(decision.latency_ms, 1),
-                              triggered=score.final_score > threshold)
-            if score.final_score <= threshold:
+                              triggered=exceeds_threshold(score.final_score, threshold))
+            if not exceeds_threshold(score.final_score, threshold):
                 self.traces.finish(run_id, "未超过插话阈值")
                 return None
             agenda_reason = self._agenda_block(sid, "interjection")
@@ -797,6 +810,7 @@ class ActiveMessagePlugin(Star):
                 raise
             candidate.scopes.inherit_observations(self.scopes)
             self.settings = candidate
+            publish_agenda_schema(self.config_raw, candidate.schema)
             self.plugin_config = candidate.config
             self.scopes = candidate.scopes
             self._scope_error = bool(candidate.scope_error)

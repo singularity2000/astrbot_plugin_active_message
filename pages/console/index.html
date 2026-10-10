@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>主动会话 · 配置与观察</title><link rel="stylesheet" href="./style.css"><script src="./ui.js" defer></script><script src="./placeholders.js" defer></script><script src="./agenda.js" defer></script><script src="./changes.js" defer></script><script src="./app.js" defer></script></head>
 <body><div class="shell">
-<aside class="rail"><div class="brand"><span class="brand-mark" aria-hidden="true">聊</span><div><strong>主动会话</strong><small>让每次开口都合时宜</small></div></div><nav id="nav" aria-label="功能导航"></nav><div class="rail-foot"><button id="tutorial">新手引导</button><p>沿用原会话的人格与历史<br>设置机器人何时主动开口</p></div></aside>
+<aside class="rail"><div class="brand"><span class="brand-mark" aria-hidden="true">聊</span><div><strong>主动会话</strong><small>让每次开口都合时宜</small></div></div><nav id="nav" aria-label="功能导航"></nav><div class="rail-foot"><button id="tutorial">新手引导</button><label class="theme-label">外观<select id="theme" aria-label="外观"><option value="auto">跟随框架</option><option value="light">浅色</option><option value="dark">深色</option></select></label></div></aside>
 <div class="workspace"><header>
 <h1 id="title">正在连接</h1>
-<div class="toolbar"><label class="theme-label">外观<select id="theme" aria-label="外观"><option value="auto">跟随框架</option><option value="light">浅色</option><option value="dark">深色</option></select></label><button id="reload">重新载入</button><button id="save" class="primary" disabled>保存并生效</button></div>
+<div class="toolbar"><button id="reload">重新载入</button><button id="save" class="primary" disabled>保存并生效</button></div>
 <span id="connection" class="muted">等待 AstrBot 页面接口</span>
 <div class="dirty-slot"><div id="dirty-summary" class="dirty-summary" hidden><div class="dirty-heading"><span id="dirty" class="tag pending" hidden>有未保存修改</span><small id="dirty-count" title="右侧列表可横向滚动查看全部修改位置"></small></div><ul id="dirty-locations" tabindex="0" aria-label="相对于上次保存的修改位置，可横向滚动查看全部" aria-live="polite" aria-relevant="additions removals text"></ul></div></div>
 </header>
