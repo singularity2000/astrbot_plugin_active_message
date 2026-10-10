@@ -1,5 +1,6 @@
 # Local collaboration instructions
 /AGENTS.md
+.VSCodeCounter
 
 # Python / editor caches
 __pycache__/

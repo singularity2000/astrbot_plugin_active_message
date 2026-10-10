@@ -53,6 +53,11 @@ def fill_defaults(raw, fields):
     return output
 
 
+def feature_enabled(mode, global_enabled):
+    """Group choices override only the matching global feature switch, not the master."""
+    return True if mode == "开启" else False if mode == "关闭" else bool(global_enabled)
+
+
 def blank(value):
     return value is None or value == "" or value == [] or (isinstance(value, str) and not value.strip()) or (isinstance(value, list) and all(isinstance(v, str) and not v.strip() for v in value))
 
@@ -102,6 +107,10 @@ class Settings:
         global_raw = copy.deepcopy(self.raw)
         global_raw["session_groups"] = []
         self.global_entry = self._entry(global_raw)
+        self.warnings = []
+        for index, group in enumerate(self.config.groups):
+            if not group.sids:
+                self.warnings.append({"code": "EMPTY_SESSION_GROUP", "group_index": index, "message": f"会话组 {index + 1} 没有 SID，不会作用于任何会话；列表非空时仍为白名单模式。"})
         self.groups = []
         self._by_identity = {}
         for index, group in enumerate(self.config.groups):
@@ -110,6 +119,9 @@ class Settings:
             inter = item.get("interjection_overrides", {})
             pro = item.get("proactive_overrides", {})
             overlay(merged["interjection"], inter, self.schema["interjection"]["items"])
+            for section in ("weights", "activity", "energy"):
+                overlay(merged["interjection"][section], item.get("interjection_" + section, {}),
+                        self.schema["interjection"]["items"][section]["items"])
             overlay(merged["proactive_chat"], pro, self.schema["proactive_chat"]["items"])
             overlay(merged["context"], item.get("context_overrides", {}), self.schema["context"]["items"])
             if not blank(item.get("threshold_override")):
@@ -121,11 +133,31 @@ class Settings:
             mode = item.get("decision_mode", "跟随全局")
             if mode != "跟随全局":
                 merged["interjection"]["decision"]["mode"] = mode
-            merged["interjection"]["enabled"] = self.config.interjection_enabled and group.interjection_enabled
-            merged["proactive_chat"]["enabled"] = self.config.proactive_enabled and group.proactive_enabled
+            inter_on = feature_enabled(group.interjection_mode, self.config.interjection_enabled)
+            pro_on = feature_enabled(group.proactive_mode, self.config.proactive_enabled)
+            # The plugin master switch is global and cannot be overridden by a group.
+            merged["enabled"] = self.config.enabled
+            merged["interjection"]["enabled"] = inter_on
+            merged["proactive_chat"]["enabled"] = pro_on
             entry = self._entry(merged)
             self.groups.append(entry)
+            for key in ("interjection_mode", "proactive_mode"):
+                if item.get(key) not in {"跟随全局", "开启", "关闭"}:
+                    entry.errors["shared"].append((key, "请选择跟随全局、开启或关闭。"))
             self._by_identity[id(group)] = entry
+
+    def any_enabled(self, feature=None):
+        if not self.config.enabled:
+            return False
+        entries = self.groups if self.config.groups else [self.global_entry]
+        for entry in entries:
+            cfg = entry.config
+            if cfg.enabled and any(
+                (name == feature or feature is None) and getattr(cfg, name + "_enabled") and entry.valid(name)
+                for name in ("interjection", "proactive")
+            ):
+                return True
+        return False
 
     def _entry(self, raw):
         config = PluginConfig.from_raw(raw)
@@ -134,7 +166,7 @@ class Settings:
         if self.scope_error:
             errors["shared"].append(("session_groups.sids", self.scope_error))
         # Resource/diagnostic limits remain global and bounded, even with the plugin off.
-        for key, low, high in (("max_runs", 1, 500), ("retention_minutes", 1, 1440), ("max_memory_mb", 1, 128)):
+        for key, low, high in (("max_runs", 1, 500), ("retention_minutes", 1, 1440), ("max_memory_mb", 1, 128), ("max_step_chars", 256, 1048576)):
             value = self.raw.get("diagnostics", {}).get(key)
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
                 errors["shared"].append(("diagnostics." + key, f"请输入 {low}～{high} 的整数。"))

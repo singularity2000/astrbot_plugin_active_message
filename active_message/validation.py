@@ -25,7 +25,7 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
         if total_weight == 0 or not math.isfinite(total_weight):
             errors["interjection"].append(("interjection.weights", "至少一个权重必须不为零，绝对权重总和不能超出有限数值范围。"))
         for index, group in enumerate(config.groups):
-            if group.interjection_enabled:
+            if group.interjection_mode != "关闭":
                 check("interjection", f"session_groups[{index}].threshold_override", group.threshold,
                       "阈值须留空或填写 0～1 的有限数字。")
         for index, prompt in enumerate(config.activation_prompts):
@@ -68,7 +68,9 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
                 ("weights.model", None, None, False), ("weights.activity", None, None, False), ("weights.energy", None, None, False)]]
             if config.model_weight:
                 rules += [("interjection", "interjection.decision.timeout_seconds", 1, None, True),
-                          ("interjection", "runtime.judgment_concurrency", 1, None, True)]
+                          ("interjection", "runtime.judgment_concurrency", 1, None, True),
+                          ("interjection", "interjection.decision.retry_attempts", 0, 5, True),
+                          ("interjection", "interjection.decision.retry_delay_seconds", 0, None, False)]
         if config.proactive_enabled:
             rules += [("proactive", "proactive_chat." + key, low, high, integer) for key, low, high, integer in [
                 ("min_interval_minutes", 1, None, True), ("max_interval_minutes", 1, None, True),
@@ -78,6 +80,9 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
         if config.interjection_enabled or config.proactive_enabled:
             rules += [("shared", "context.history_messages", 0, None, True),
                       ("shared", "context.recent_messages", 0, None, True),
+                      ("shared", "context.judgment_max_tokens", 256, None, True),
+                      ("shared", "context.judgment_max_chars", 1024, None, True),
+                      ("shared", "context.message_max_chars", 64, None, True),
                       ("shared", "interjection.cooldown_seconds", 0, None, False)]
         for section, path, low, high, integer in rules:
             value = raw

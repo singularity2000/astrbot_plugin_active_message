@@ -1,10 +1,12 @@
 """使用原生 Pages 的登录校验与接口，不另起服务器，不公开原始日志。"""
 from __future__ import annotations
+import asyncio
 import copy
 import hashlib
 import json
 import time
 from .settings import Settings, shape_errors, schema
+from .prompts import placeholder_catalog
 
 KEEP_SECRET = "__ACTIVE_MESSAGE_KEEP_SECRET__"
 
@@ -21,13 +23,14 @@ class PageAPI:
     def __init__(self, plugin):
         self.plugin = plugin
         self.handlers = []
+        self._prefs_lock = asyncio.Lock()
 
     def register(self):
-        for name in ("bootstrap", "status", "trace", "settings", "preview", "clear"):
+        for name in ("bootstrap", "status", "trace", "settings", "preview", "clear", "preferences"):
             handler = getattr(self, name)
             self.handlers.append(handler)
             self.plugin.context.register_web_api(f"/{self.plugin.PLUGIN_ID}/{name}", handler,
-                ["POST"] if name in {"settings", "preview", "clear"} else ["GET"], "主动会话运行检查台")
+                ["POST"] if name in {"settings", "preview", "clear", "preferences"} else ["GET"], "主动会话运行检查台")
 
     def unregister(self):
         registry = self.plugin.context.registered_web_apis
@@ -76,13 +79,15 @@ class PageAPI:
 
     async def bootstrap(self):
         try:
-            self._auth()
+            request = self._auth()
             providers = []
             for provider in self.plugin.context.get_all_providers():
                 meta = provider.meta()
                 providers.append({"id":str(meta.id), "name":str(getattr(meta, "model", "") or meta.id)})
             return self._response({"config":public_config(self.plugin.settings.raw), "schema":self.plugin.settings.schema,
-                                   "revision":self.revision(), "providers":providers, "errors":self.plugin.settings.blocking_errors()})
+                                   "revision":self.revision(), "providers":providers, "errors":self.plugin.settings.blocking_errors(),
+                                   "warnings":self.plugin.settings.warnings, "placeholders":placeholder_catalog(),
+                                   "preferences":await self._read_preferences(request.username)})
         except PermissionError as exc: return self._response(error=str(exc))
         except Exception:
             self.plugin.observer.log("warning", "PAGE_READ_FAILED", explanation="无法读取配置或 Provider 列表。")
@@ -112,7 +117,8 @@ class PageAPI:
             errors = p.settings.blocking_errors()
             if not p._state_valid:
                 errors["运行状态"] = {"shared":[["runtime_state.json", "恢复失败；请先备份、检查状态文件并重载。插件已暂停。"]]}
-            return self._response({"enabled":p.plugin_config.enabled and p._valid, "sessions":sessions,
+            return self._response({"enabled":p._available(), "global_enabled":p.plugin_config.enabled, "sessions":sessions,
+                "warnings":p.settings.warnings,
                 "unresolved":p.scopes.unresolved(), "runs":p.traces.list(), "capture_raw":p.traces.capture_raw,
                 "errors":errors})
         except PermissionError as exc: return self._response(error=str(exc))
@@ -121,7 +127,15 @@ class PageAPI:
     async def trace(self):
         try:
             request = self._auth()
-            run = self.plugin.traces.get(str(request.query.get("run_id", "")))
+            run_id = str(request.query.get("run_id", ""))
+            if "step" in request.query:
+                try:
+                    index = int(request.query["step"])
+                except (TypeError, ValueError):
+                    return self._response(error="步骤编号无效。")
+                run = self.plugin.traces.step(run_id, index)
+            else:
+                run = self.plugin.traces.describe(run_id)
             return self._response(run, error=None if run else "记录已过期、被容量淘汰或不存在。")
         except PermissionError as exc: return self._response(error=str(exc))
 
@@ -133,7 +147,7 @@ class PageAPI:
             if isinstance(index, bool) or not isinstance(index, int) or index < -1 or index >= len(candidate.groups):
                 raise ValueError("会话组索引无效，请刷新配置。")
             entry = candidate.groups[index] if index >= 0 else candidate.global_entry
-            return self._response({"effective":public_config(entry.raw), "errors":entry.errors})
+            return self._response({"effective":public_config(entry.raw), "errors":entry.errors, "warnings":candidate.warnings})
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
 
     async def settings(self):
@@ -158,3 +172,40 @@ class PageAPI:
             self.plugin.traces.clear()
             return self._response({"cleared":True})
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
+
+    @staticmethod
+    def _preference_key(username):
+        return "console_preferences_" + hashlib.sha256(str(username).encode("utf-8")).hexdigest()
+
+    async def _read_preferences(self, username, *, strict=False):
+        try:
+            value = await self.plugin.get_kv_data(self._preference_key(username), {})
+            return value if isinstance(value, dict) else {}
+        except Exception as exc:
+            self.plugin.observer.error("PAGE_PREFERENCES_FAILED", exc)
+            if strict:
+                raise
+            return {}
+
+    async def preferences(self):
+        """UI-only preferences never save/reload operational plugin settings."""
+        try:
+            data = await self._body()
+            request = self._auth()
+            allowed = {"tab": {"overview", "traces", "groups", "interjection", "proactive", "schedule", "context"},
+                       "theme": {"auto", "light", "dark"}, "tutorial_seen": {True, False}}
+            patch = {}
+            for key, value in data.items():
+                if key not in allowed or not isinstance(value, (str, bool)) or value not in allowed[key]:
+                    raise ValueError("页面偏好字段或取值无效。")
+                patch[key] = value
+            async with self._prefs_lock:
+                prefs = await self._read_preferences(request.username, strict=True)
+                prefs.update(patch)
+                await self.plugin.put_kv_data(self._preference_key(request.username), prefs)
+            return self._response(prefs)
+        except (ValueError, PermissionError) as exc:
+            return self._response(error=str(exc))
+        except Exception as exc:
+            self.plugin.observer.error("PAGE_PREFERENCES_FAILED", exc)
+            return self._response(error="页面偏好未能保存，当前操作仍有效；请检查插件存储。")

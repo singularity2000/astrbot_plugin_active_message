@@ -74,7 +74,7 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
     runner = None
     async with session_lock_manager.acquire_lock(sid):
         if not plugin.proactive_allowed_now(sid) or not session_allows_plugin(context, sid, plugin.PLUGIN_ID):
-            plugin.observer.log("info", "PROACTIVE_SKIPPED", sid=sid, run_id=meta["run_id"])
+            plugin.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid, run_id=meta["run_id"])
             return
         if not await SessionServiceManager.should_process_llm_request(event):
             plugin.observer.log("info", "SESSION_LLM_DISABLED", sid=sid, run_id=meta["run_id"])
@@ -140,7 +140,7 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
                 await reset
                 reset = None
             plugin.runtime.get(sid).agent_active = True
-            plugin.observer.log("info", "AGENT_STARTED", sid=sid, run_id=meta["run_id"], role="member", trigger_type="主动聊天")
+            plugin.observer.log("debug", "AGENT_STARTED", sid=sid, run_id=meta["run_id"], role="member", trigger_type="主动聊天")
             async with asyncio.timeout(config.proactive_timeout_seconds):
                 async for _ in runner.step_until_done(max(1, int(misc.get("max_steps", 128)))):
                     pass
@@ -151,7 +151,7 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
             await persist_agent_history(context.conversation_manager, event=event, req=result.provider_request, summary_note=summary)
             plugin.traces.add(meta["run_id"], "主动任务历史已交由原生接口保存", {"conversation_id":getattr(conversation,"cid",None)})
             if not event.get_extra("_active_message_sent", False):
-                plugin.observer.log("info", "PROACTIVE_NO_SEND", sid=sid, run_id=meta["run_id"])
+                plugin.observer.log("debug", "PROACTIVE_NO_SEND", sid=sid, run_id=meta["run_id"])
         finally:
             if reset is not None:
                 reset.close()

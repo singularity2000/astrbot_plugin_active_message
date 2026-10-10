@@ -1,33 +1,39 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from .schedule import current_mood, parse_time_ranges
+from .schedule import current_mood, get_timezone, in_time_ranges, parse_time_ranges
 
 
-def next_sleep_end(now: datetime, sleep_hours: str) -> datetime:
-    ranges = parse_time_ranges(sleep_hours)
-    candidates: list[datetime] = []
-    for start, end in ranges:
-        if start == end:
-            candidates.append(now + timedelta(days=1))
-            continue
-        end_day = now.date()
-        if start < end:
-            if now.hour * 60 + now.minute >= end:
-                end_day += timedelta(days=1)
-        else:
-            minute = now.hour * 60 + now.minute
-            if minute >= start:
-                end_day += timedelta(days=1)
-        candidate = datetime.combine(end_day, datetime.min.time(), tzinfo=now.tzinfo).replace(
-            hour=end // 60, minute=end % 60
-        )
-        if candidate <= now:
-            candidate += timedelta(days=1)
-        candidates.append(candidate)
-    return min(candidates) if candidates else now + timedelta(hours=1)
+PROACTIVE_SCHEDULE_VERSION = 2
+
+
+def _next_boundary(now: datetime, boundaries: list[int]) -> datetime:
+    """返回下一个当地作息边界（UTC）；时区偏移变化也会切分等待区间。"""
+    now_utc = now.astimezone(timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    candidates = (
+        (midnight + timedelta(days=day, minutes=minute))
+        .replace(fold=fold).astimezone(timezone.utc)
+        for day in (0, 1)
+        for minute in boundaries
+        for fold in (0, 1)
+    )
+    boundary = min(candidate for candidate in candidates if candidate > now_utc)
+    # 夏令时可跳过或重复某个作息边界。先走到偏移切换处，再按真实当地时间
+    # 重新判断 mood，避免在不存在的钟表时间或睡眠时段安排发言。
+    offset = now.utcoffset()
+    if boundary.astimezone(now.tzinfo).utcoffset() != offset:
+        left, right = now_utc, boundary
+        while right - left > timedelta(microseconds=1):
+            middle = left + (right - left) // 2
+            if middle.astimezone(now.tzinfo).utcoffset() == offset:
+                left = middle
+            else:
+                right = middle
+        boundary = right
+    return boundary
 
 
 def choose_proactive_run_at(
@@ -39,16 +45,40 @@ def choose_proactive_run_at(
     min_minutes: int,
     max_minutes: int,
     active_multiplier: float,
-) -> tuple[datetime, str]:
-    """返回下一次主动聊天时间和三档心情。"""
+) -> tuple[datetime | None, str]:
+    """抽取一次等效正常等待量：睡眠暂停，活跃按倍率加速，跨段不重抽。
 
+    返回计划时间和排期时的 mood；每天均无清醒时段时不安排计划。
+    """
+    tz = get_timezone(timezone_name) if timezone_name else now.tzinfo or get_timezone("")
+    now = now.astimezone(tz) if now.tzinfo is not None else now.replace(tzinfo=tz)
     mood = current_mood(now, sleep_hours, active_hours)
-    if mood == "睡眠":
-        return next_sleep_end(now, sleep_hours), mood
+    sleep_ranges = parse_time_ranges(sleep_hours)
+    active_ranges = parse_time_ranges(active_hours)
+    boundaries = sorted({0} | {
+        minute for start, end in sleep_ranges + active_ranges for minute in (start, end)
+    })
+    # 在每个分段起点检查，兼容跨午夜、重叠时段及多段合起来覆盖全天。
+    if all(in_time_ranges(now.replace(hour=minute // 60, minute=minute % 60), sleep_ranges)
+           for minute in boundaries):
+        return None, mood
+
     low = max(1, min(int(min_minutes), int(max_minutes)))
     high = max(low, int(max_minutes))
-    delay = random.uniform(low, high)
-    if mood == "活跃":
-        delay *= max(0.1, float(active_multiplier))
-    run_at_local = now + timedelta(minutes=delay)
-    return run_at_local, mood
+    remaining = random.uniform(low, high) * 60.0
+    active_multiplier = max(0.1, float(active_multiplier))
+    cursor = now
+    while True:
+        boundary = _next_boundary(cursor, boundaries)
+        if not in_time_ranges(cursor, sleep_ranges):
+            multiplier = active_multiplier if in_time_ranges(cursor, active_ranges) else 1.0
+            cursor_utc = cursor.astimezone(timezone.utc)
+            capacity = (boundary - cursor_utc).total_seconds() / multiplier
+            if remaining < capacity:
+                run_at = cursor_utc + timedelta(seconds=remaining * multiplier)
+                # 微秒舍入也不能让结果越过边界，尤其不能落在睡眠起点。
+                if run_at < boundary:
+                    return run_at.astimezone(tz), mood
+            remaining = max(0.0, remaining - capacity)
+        # 睡眠段不扣除等待量；其余时段保留尚未消耗的部分。
+        cursor = boundary.astimezone(tz)

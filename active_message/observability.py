@@ -7,6 +7,13 @@ from typing import Any
 
 
 MESSAGES = {
+    "EMPTY_SESSION_GROUP": "空会话组没有目标；列表非空时仍为白名单模式。",
+    "IMAGE_CONTEXT_UNAVAILABLE": "当前框架无法只读提供待注入的群图片转述；保留原历史与媒体标签，不重复识图。",
+    "JUDGMENT_INPUT": "判断输入已按预算准备；token 为估算值，不等于服务实际计费。",
+    "MODEL_RETRY": "遇到临时故障，按本轮超时与重试设置等待重试。",
+    "INPUT_TOO_LARGE": "历史已缩减，但固定提示词或当前输入仍超预算；请缩短提示词或合理调整判断预算。",
+    "PAGE_PREFERENCES_FAILED": "界面偏好存储失败，不影响运行配置。",
+    "CONFIG_APPLIED": "配置已保存并生效，待执行计划已重新安排。",
     "DIAGNOSTIC_CAPTURE_FAILED": "本次诊断快照未能保存；不影响发言流程，不会用摘要冒充全文。",
     "PAGE_READ_FAILED": "运行检查台读取失败，请检查页面接口与 Provider 状态。",
     "CONFIG_SAVE_FAILED": "配置保存失败，未切换运行配置；请刷新页面并检查日志。",
@@ -51,7 +58,7 @@ MESSAGES = {
     "INTERJECTION_FAILED": "本轮智能插话执行失败，请检查异常类型和代码位置。",
 }
 REPEAT_CODES = {"COOLDOWN", "AGENT_ACTIVE", "PROVIDER_MISSING", "MODEL_TIMEOUT", "MODEL_INVALID",
-                "MODEL_ERROR", "JEV_HTTP", "JEV_CONFIG", "NO_CONVERSATION", "PROACTIVE_SKIPPED",
+                "MODEL_ERROR", "INPUT_TOO_LARGE", "JEV_HTTP", "JEV_CONFIG", "NO_CONVERSATION", "PROACTIVE_SKIPPED",
                 "STATE_SAVE_FAILED", "SCHEDULER_FAILED"}
 
 

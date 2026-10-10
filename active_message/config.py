@@ -51,6 +51,10 @@ class DecisionConfig:
     jev_api_key: str
     jev_model: str
     jev_state_template: str
+    max_input_tokens: int = 12000
+    max_input_chars: int = 48000
+    retry_attempts: int = 1
+    retry_delay_seconds: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,8 +62,8 @@ class SessionGroup:
     name: str
     sids: tuple[str, ...]
     threshold_override: str
-    interjection_enabled: bool
-    proactive_enabled: bool
+    interjection_mode: str
+    proactive_mode: str
 
     def threshold(self) -> float | None:
         raw = self.threshold_override.strip()
@@ -102,7 +106,11 @@ class PluginConfig:
     active_interval_multiplier: float
     proactive_prompts: tuple[str, ...]
     groups: tuple[SessionGroup, ...]
-    history_messages: int = 0
+    history_messages: int = 20
+    judgment_max_tokens: int = 12000
+    judgment_max_chars: int = 48000
+    message_max_chars: int = 4000
+    reuse_image_descriptions: bool = True
     context_recent_messages: int = 50
     missing_group_history: str = "skip"
     judgment_concurrency: int = 2
@@ -140,12 +148,8 @@ class PluginConfig:
                         name=_text(item_dict.get("name"), f"会话组 {index + 1}"),
                         sids=sids,
                         threshold_override=_text(item_dict.get("threshold_override")),
-                        interjection_enabled=_bool(
-                            item_dict.get("interjection_enabled"), True
-                        ),
-                        proactive_enabled=_bool(
-                            item_dict.get("proactive_enabled"), True
-                        ),
+                        interjection_mode=_text(item_dict.get("interjection_mode"), "跟随全局"),
+                        proactive_mode=_text(item_dict.get("proactive_mode"), "跟随全局"),
                     )
                 )
 
@@ -159,7 +163,7 @@ class PluginConfig:
         return cls(
             enabled=_bool(root.get("enabled"), False),
             interjection_enabled=_bool(interjection.get("enabled"), True),
-            threshold=max(0.0, min(1.0, _float(interjection.get("threshold"), 0.75))),
+            threshold=max(0.0, min(1.0, _float(interjection.get("threshold"), 0.7))),
             debounce_seconds=max(0.0, _float(interjection.get("debounce_seconds"), 3.0)),
             cooldown_seconds=max(0.0, _float(interjection.get("cooldown_seconds"), 60.0)),
             max_recent_messages=_int(interjection.get("max_recent_messages"), 200, 10),
@@ -170,7 +174,7 @@ class PluginConfig:
             activity_target_messages=_int(activity.get("target_messages"), 8, 1),
             activity_freshness_seconds=_int(activity.get("freshness_seconds"), 300, 1),
             energy_window_seconds=_int(energy.get("window_seconds"), 3600, 1),
-            energy_target_messages=_int(energy.get("target_messages"), 3, 1),
+            energy_target_messages=_int(energy.get("target_messages"), 5, 1),
             decision=DecisionConfig(
                 mode=_text(decision.get("mode"), "llm").lower(),
                 provider_id=_text(decision.get("provider_id")),
@@ -185,9 +189,13 @@ class PluginConfig:
                 ),
                 jev_api_key=_text(decision.get("jev_api_key")),
                 jev_model=_text(decision.get("jev_model"), "jev-latest"),
+                max_input_tokens=_int(_as_dict(root.get("context")).get("judgment_max_tokens"), 12000, 1),
+                max_input_chars=_int(_as_dict(root.get("context")).get("judgment_max_chars"), 48000, 1),
+                retry_attempts=_int(decision.get("retry_attempts"), 1),
+                retry_delay_seconds=_float(decision.get("retry_delay_seconds"), 1.0),
                 jev_state_template=_text(
                     decision.get("jev_state_template"),
-                    """当前消息：{current_message}\n最近聊天：{recent_messages}\n当前人格提示词：{persona_prompt}\n群活跃分：{activity_score}\n机器人精力分：{energy_score}""",
+                    """人格：{persona_prompt}\n群活跃分：{activity_score}\n机器人精力分：{energy_score}""",
                 ),
             ),
             activation_prompts=tuple(
@@ -223,7 +231,11 @@ class PluginConfig:
             groups=tuple(groups),
             debounce_max_seconds=_float(interjection.get("debounce_max_seconds"), 10),
             decision_max_age_seconds=_float(interjection.get("decision_max_age_seconds"), 45),
-            history_messages=_int(_as_dict(root.get("context")).get("history_messages"), 0),
+            history_messages=_int(_as_dict(root.get("context")).get("history_messages"), 20),
+            judgment_max_tokens=_int(_as_dict(root.get("context")).get("judgment_max_tokens"), 12000, 1),
+            judgment_max_chars=_int(_as_dict(root.get("context")).get("judgment_max_chars"), 48000, 1),
+            message_max_chars=_int(_as_dict(root.get("context")).get("message_max_chars"), 4000, 1),
+            reuse_image_descriptions=_bool(_as_dict(root.get("context")).get("reuse_image_descriptions"), True),
             context_recent_messages=_int(_as_dict(root.get("context")).get("recent_messages"), 50),
             missing_group_history=_text(_as_dict(root.get("context")).get("missing_group_history"), "skip"),
             judgment_concurrency=_int(_as_dict(root.get("runtime")).get("judgment_concurrency"), 2, 1),

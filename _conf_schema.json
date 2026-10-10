@@ -3,7 +3,7 @@
     "type": "bool",
     "description": "启用主动会话插件",
     "default": false,
-    "hint": "总开关。首次安装默认关闭，确认配置和关闭 AstrBot 原版主动回复后再开启。"
+    "hint": "总开关。关闭后所有会话的智能插话和主动聊天都停止，本组不能覆盖此开关。首次安装默认关闭，确认配置和关闭 AstrBot 原版主动回复后再开启。"
   },
   "interjection": {
     "type": "object",
@@ -12,18 +12,19 @@
       "enabled": {
         "type": "bool",
         "description": "启用智能插话",
-        "default": true
+        "default": true,
+        "hint": "全局智能插话默认值。会话组可选择跟随、开启或关闭，但所有会话都必须先打开最上方“启用主动会话插件”。"
       },
       "threshold": {
         "type": "float",
         "description": "全局插话阈值",
-        "default": 0.75,
+        "default": 0.7,
         "slider": {
           "min": 0,
           "max": 1,
           "step": 0.01
         },
-        "hint": "三项加权后的最终分数必须严格高于此值才会插话。"
+        "hint": "三项加权后的最终分必须严格高于此值。越低越容易插话；0.7 不是“70% 概率”，精力为 0 也不一定禁止插话。"
       },
       "debounce_seconds": {
         "type": "float",
@@ -105,7 +106,8 @@
           "target_messages": {
             "type": "int",
             "description": "达到最低精力所需机器人消息数",
-            "default": 3
+            "default": 5,
+            "hint": "默认统计最近一小时。设为 5 时，近期成功发送 5 次后精力降到 0；设得越大越耐聊。精力只是加权因子，0 不代表禁止插话。"
           }
         }
       },
@@ -162,8 +164,20 @@
           "jev_state_template": {
             "type": "text",
             "description": "判断补充信息模板（LLM/Jev 通用）",
-            "default": "当前消息：{current_message}\n最近聊天：{recent_messages}\n当前人格提示词：{persona_prompt}\n群活跃分：{activity_score}\n机器人精力分：{energy_score}",
-            "hint": "作为补充信息；选定的分支历史、近期群消息与当前消息由插件自动附加，无需手写历史占位符。旧字段名保留以兼容已有配置。"
+            "default": "人格：{persona_prompt}\n群活跃分：{activity_score}\n机器人精力分：{energy_score}",
+            "hint": "当前消息、选定历史、近期群消息和已有图片转述由程序自动附加，一般不要再放历史占位符，以免重复。仅用于判断，不改变真正发言的 Agent。"
+          },
+          "retry_attempts": {
+            "type": "int",
+            "description": "临时网络故障最多重试次数",
+            "default": 1,
+            "hint": "0 为不重试。只重试连接错误、限流和服务临时故障；请求格式或鉴权错误不重试。重试仍包含在判断超时内。"
+          },
+          "retry_delay_seconds": {
+            "type": "float",
+            "description": "首次重试等待（秒）",
+            "default": 1,
+            "hint": "后续按指数增加；服务返回 Retry-After 时优先遵守，但不会超过本轮超时。"
           }
         }
       },
@@ -200,7 +214,7 @@
         "type": "bool",
         "description": "启用主动聊天",
         "default": false,
-        "hint": "机器人按作息和随机时间主动寻找指定会话聊天。默认关闭。"
+        "hint": "全局主动聊天默认值。会话组可选择跟随、开启或关闭，但所有会话都必须先打开最上方“启用主动会话插件”。"
       },
       "min_interval_minutes": {
         "type": "int",
@@ -266,9 +280,118 @@
       }
     }
   },
+  "context": {
+    "type": "object",
+    "description": "全局上下文：判断材料与补充资料",
+    "items": {
+      "history_messages": {
+        "type": "int",
+        "description": "判断模型读取的原生分支历史条数",
+        "default": 20,
+        "hint": "读取当前分支最后 N 条已保存消息（不是轮数）；0 表示先选全部，仍受文字与 token 预算约束。只处理判断材料和提示词引用，不修改原生历史或 Agent 的原生上下文。"
+      },
+      "recent_messages": {
+        "type": "int",
+        "description": "额外读取的近期群消息条数",
+        "default": 50,
+        "hint": "先选原生群消息历史最后 N 条，再应用文字与 token 预算；0 表示先选全部。需开启框架群消息历史保存。已有图片转述由独立的只读来源补充，二进制只保留标签。"
+      },
+      "missing_group_history": {
+        "type": "string",
+        "description": "群消息历史不可用时",
+        "options": [
+          "skip",
+          "runtime"
+        ],
+        "default": "skip",
+        "hint": "skip：停止本次判断/主动聊天并告警；runtime：明确告警后使用插件短期摘要（可能不完整）。私聊仍使用原生分支历史。"
+      },
+      "judgment_max_tokens": {
+        "type": "int",
+        "description": "判断输入 token 预算（估算）",
+        "default": 12000,
+        "hint": "包括判断指令和最终输入；不是模型的精确分词。请留余量并按所用模型调整。Jev 当前 state 加问题上限为 32k，第三方接口可能更低。超预算先去掉较旧参考记录，固定指令仍超预算则明确跳过。"
+      },
+      "judgment_max_chars": {
+        "type": "int",
+        "description": "判断输入最多字符数",
+        "default": 48000,
+        "hint": "与 token 预算同时生效；中文每字也是一个字符。防止单条巨型消息挤满判断输入。不会删改原生历史。"
+      },
+      "message_max_chars": {
+        "type": "int",
+        "description": "每条参考记录最多字符数",
+        "default": 4000,
+        "hint": "超出时保留开头并标记“文字已缩减”。图片、音频等二进制只保留标签，已有图片转述仍作为文字保留。"
+      },
+      "reuse_image_descriptions": {
+        "type": "bool",
+        "description": "复用框架已生成的图片转述",
+        "default": true,
+        "hint": "只读当前会话原生群上下文中已有的转述，不额外请求识图，也不取走框架待注入队列。框架未生成转述时仅保留 [Image] 标签。"
+      }
+    }
+  },
+  "runtime": {
+    "type": "object",
+    "description": "运行资源与超时",
+    "items": {
+      "judgment_concurrency": {
+        "type": "int",
+        "description": "判断请求最大并发数",
+        "default": 2,
+        "hint": "所有会话共享。正整数；不是每个群的消息频率。"
+      },
+      "proactive_concurrency": {
+        "type": "int",
+        "description": "主动聊天最大并发数",
+        "default": 2
+      },
+      "proactive_timeout_seconds": {
+        "type": "int",
+        "description": "一轮主动聊天最长执行时间（秒）",
+        "default": 180,
+        "hint": "与判断模型的超时分开；到期中止任务，但已发送消息不能撤回。"
+      }
+    }
+  },
+  "diagnostics": {
+    "type": "object",
+    "description": "运行检查台与临时诊断",
+    "items": {
+      "capture_raw": {
+        "type": "bool",
+        "description": "临时采集文字请求快照",
+        "default": false,
+        "hint": "默认关闭。打开后，仅在内存保留已隐藏已知凭据、移除媒体编码且限制长度的文字快照，不是完整网络报文。关闭或保存配置会清空记录。"
+      },
+      "max_runs": {
+        "type": "int",
+        "description": "最多保留的运行记录数",
+        "default": 50
+      },
+      "retention_minutes": {
+        "type": "int",
+        "description": "记录保留时间（分钟）",
+        "default": 30
+      },
+      "max_memory_mb": {
+        "type": "int",
+        "description": "诊断记录内存上限（MiB）",
+        "default": 10,
+        "hint": "按记录序列化体积估算的容量预算，不是整个进程的内存硬上限。超出时淘汰旧记录；单步文字还受单步字符预算限制。"
+      },
+      "max_step_chars": {
+        "type": "int",
+        "description": "单步回放最多字符数",
+        "default": 16000,
+        "hint": "仅限制诊断展示，不改变模型实际输入。超出会明确标记，不把缩减内容冒充全文。"
+      }
+    }
+  },
   "session_groups": {
     "type": "template_list",
-    "description": "会话组。列表为空时对所有支持的会话生效；添加会话组后进入白名单模式。",
+    "description": "会话组：指定范围与独立覆盖",
     "templates": {
       "group": {
         "name": "会话组",
@@ -287,24 +410,33 @@
             "default": [],
             "hint": "推荐完整 SID：平台实例 ID:GroupMessage/FriendMessage:会话 ID。"
           },
+          "interjection_mode": {
+            "type": "string",
+            "description": "本组智能插话",
+            "options": [
+              "跟随全局",
+              "开启",
+              "关闭"
+            ],
+            "default": "跟随全局",
+            "hint": "跟随全局：采用全局“启用智能插话”的值；开启／关闭：覆盖该功能开关。三种选择都受最上方“启用主动会话插件”总开关控制，还须满足范围、模型、阈值与框架权限。"
+          },
+          "proactive_mode": {
+            "type": "string",
+            "description": "本组主动聊天",
+            "options": [
+              "跟随全局",
+              "开启",
+              "关闭"
+            ],
+            "default": "跟随全局",
+            "hint": "跟随全局：采用全局“启用主动聊天”的值；开启／关闭：覆盖该功能开关。三种选择都受最上方“启用主动会话插件”总开关控制，还须满足范围、作息、上限与框架权限。"
+          },
           "threshold_override": {
             "type": "string",
             "description": "阈值覆盖",
             "default": "",
-            "hint": "留空跟随全局；0 是合法阈值。",
-            "condition": {
-              "interjection_enabled": true
-            }
-          },
-          "interjection_enabled": {
-            "type": "bool",
-            "description": "本组启用智能插话",
-            "default": true
-          },
-          "proactive_enabled": {
-            "type": "bool",
-            "description": "本组启用主动聊天",
-            "default": true
+            "hint": "留空跟随全局；0 是合法阈值。"
           },
           "decision_mode": {
             "type": "string",
@@ -315,89 +447,17 @@
               "llm",
               "jev"
             ],
-            "condition": {
-              "interjection_enabled": true
-            },
             "hint": "仅覆盖模式。Provider、Key、接口与判断提示词仍使用全局配置。"
           },
           "interjection_overrides": {
             "type": "object",
             "description": "本组智能插话详细设置",
-            "condition": {
-              "interjection_enabled": true
-            },
             "items": {
               "debounce_seconds": {
                 "type": "string",
                 "description": "停顿等待（秒）",
                 "default": "",
                 "hint": "留空跟随全局；0 是有效值。群里暂停发言这么久后开始判断；持续聊天时受“最长合并时间”约束。"
-              },
-              "weights": {
-                "type": "object",
-                "description": "三项因子权重",
-                "items": {
-                  "model": {
-                    "type": "string",
-                    "description": "模型判断权重（可为负数）",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。正数：模型分越高越容易触发；负数：模型分越高反而越不容易触发。"
-                  },
-                  "activity": {
-                    "type": "string",
-                    "description": "群活跃权重（可为负数）",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。根据近期真人发言条数和最近消息距今时长计算。"
-                  },
-                  "energy": {
-                    "type": "string",
-                    "description": "机器人精力权重（可为负数）",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。近期机器人发言越多，精力分越低。"
-                  }
-                }
-              },
-              "activity": {
-                "type": "object",
-                "description": "群活跃分参数",
-                "items": {
-                  "window_seconds": {
-                    "type": "string",
-                    "description": "统计窗口（秒）",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。"
-                  },
-                  "target_messages": {
-                    "type": "string",
-                    "description": "达到满条数分所需消息数",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。"
-                  },
-                  "freshness_seconds": {
-                    "type": "string",
-                    "description": "消息新鲜度衰减时间（秒）",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。"
-                  }
-                }
-              },
-              "energy": {
-                "type": "object",
-                "description": "机器人精力分参数",
-                "items": {
-                  "window_seconds": {
-                    "type": "string",
-                    "description": "统计窗口（秒）",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。"
-                  },
-                  "target_messages": {
-                    "type": "string",
-                    "description": "达到最低精力所需机器人消息数",
-                    "default": "",
-                    "hint": "留空跟随全局；0 是有效值。"
-                  }
-                }
               },
               "debounce_max_seconds": {
                 "type": "string",
@@ -422,12 +482,75 @@
               }
             }
           },
+          "interjection_weights": {
+            "type": "object",
+            "description": "三项因子权重",
+            "items": {
+              "model": {
+                "type": "string",
+                "description": "模型判断权重（可为负数）",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。正数：模型分越高越容易触发；负数：模型分越高反而越不容易触发。"
+              },
+              "activity": {
+                "type": "string",
+                "description": "群活跃权重（可为负数）",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。根据近期真人发言条数和最近消息距今时长计算。"
+              },
+              "energy": {
+                "type": "string",
+                "description": "机器人精力权重（可为负数）",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。近期机器人发言越多，精力分越低。"
+              }
+            }
+          },
+          "interjection_activity": {
+            "type": "object",
+            "description": "群活跃分参数",
+            "items": {
+              "window_seconds": {
+                "type": "string",
+                "description": "统计窗口（秒）",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。"
+              },
+              "target_messages": {
+                "type": "string",
+                "description": "达到满条数分所需消息数",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。"
+              },
+              "freshness_seconds": {
+                "type": "string",
+                "description": "消息新鲜度衰减时间（秒）",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。"
+              }
+            }
+          },
+          "interjection_energy": {
+            "type": "object",
+            "description": "机器人精力分参数",
+            "items": {
+              "window_seconds": {
+                "type": "string",
+                "description": "统计窗口（秒）",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。"
+              },
+              "target_messages": {
+                "type": "string",
+                "description": "达到最低精力所需机器人消息数",
+                "default": "",
+                "hint": "留空跟随全局；0 是有效值。"
+              }
+            }
+          },
           "proactive_overrides": {
             "type": "object",
             "description": "本组主动聊天详细设置",
-            "condition": {
-              "proactive_enabled": true
-            },
             "items": {
               "min_interval_minutes": {
                 "type": "string",
@@ -496,13 +619,13 @@
                 "type": "string",
                 "description": "判断模型读取的原生分支历史条数",
                 "default": "",
-                "hint": "留空跟随全局；0 是有效值。0 表示当前分支全部已保存记录；正整数表示最后 N 条 JSON 消息（不是 N 轮）。不会恢复框架已删除或压缩的历史。"
+                "hint": "留空跟随全局；0 是有效值。读取当前分支最后 N 条已保存消息（不是轮数）；0 表示先选全部，仍受文字与 token 预算约束。只处理判断材料和提示词引用，不修改原生历史或 Agent 的原生上下文。"
               },
               "recent_messages": {
                 "type": "string",
                 "description": "额外读取的近期群消息条数",
                 "default": "",
-                "hint": "留空跟随全局；0 是有效值。从 AstrBot 原生群消息历史读取最后 N 条；0 表示读取全部已保留记录。需开启主框架的群消息历史保存。媒体仅包含框架保存的文本标记。"
+                "hint": "留空跟随全局；0 是有效值。先选原生群消息历史最后 N 条，再应用文字与 token 预算；0 表示先选全部。需开启框架群消息历史保存。已有图片转述由独立的只读来源补充，二进制只保留标签。"
               },
               "missing_group_history": {
                 "type": "string",
@@ -514,6 +637,35 @@
                 ],
                 "default": "",
                 "hint": "留空跟随全局。skip：停止本次判断/主动聊天并告警；runtime：明确告警后使用插件短期摘要（可能不完整）。私聊仍使用原生分支历史。"
+              },
+              "judgment_max_tokens": {
+                "type": "string",
+                "description": "判断输入 token 预算（估算）",
+                "default": "",
+                "hint": "留空跟随全局。包括判断指令和最终输入；不是模型的精确分词。请留余量并按所用模型调整。Jev 当前 state 加问题上限为 32k，第三方接口可能更低。超预算先去掉较旧参考记录，固定指令仍超预算则明确跳过。"
+              },
+              "judgment_max_chars": {
+                "type": "string",
+                "description": "判断输入最多字符数",
+                "default": "",
+                "hint": "留空跟随全局。与 token 预算同时生效；中文每字也是一个字符。防止单条巨型消息挤满判断输入。不会删改原生历史。"
+              },
+              "message_max_chars": {
+                "type": "string",
+                "description": "每条参考记录最多字符数",
+                "default": "",
+                "hint": "留空跟随全局。超出时保留开头并标记“文字已缩减”。图片、音频等二进制只保留标签，已有图片转述仍作为文字保留。"
+              },
+              "reuse_image_descriptions": {
+                "type": "string",
+                "description": "复用框架已生成的图片转述",
+                "default": "",
+                "hint": "留空跟随全局。只读当前会话原生群上下文中已有的转述，不额外请求识图，也不取走框架待注入队列。框架未生成转述时仅保留 [Image] 标签。",
+                "options": [
+                  "",
+                  "开启",
+                  "关闭"
+                ]
               }
             }
           },
@@ -526,85 +678,8 @@
         }
       }
     },
-    "default": []
-  },
-  "context": {
-    "type": "object",
-    "description": "上下文输入（判断模型与主动聊天）",
-    "items": {
-      "history_messages": {
-        "type": "int",
-        "description": "判断模型读取的原生分支历史条数",
-        "default": 0,
-        "hint": "0 表示当前分支全部已保存记录；正整数表示最后 N 条 JSON 消息（不是 N 轮）。不会恢复框架已删除或压缩的历史。"
-      },
-      "recent_messages": {
-        "type": "int",
-        "description": "额外读取的近期群消息条数",
-        "default": 50,
-        "hint": "从 AstrBot 原生群消息历史读取最后 N 条；0 表示读取全部已保留记录。需开启主框架的群消息历史保存。媒体仅包含框架保存的文本标记。"
-      },
-      "missing_group_history": {
-        "type": "string",
-        "description": "群消息历史不可用时",
-        "options": [
-          "skip",
-          "runtime"
-        ],
-        "default": "skip",
-        "hint": "skip：停止本次判断/主动聊天并告警；runtime：明确告警后使用插件短期摘要（可能不完整）。私聊仍使用原生分支历史。"
-      }
-    }
-  },
-  "runtime": {
-    "type": "object",
-    "description": "运行资源与超时",
-    "items": {
-      "judgment_concurrency": {
-        "type": "int",
-        "description": "判断请求最大并发数",
-        "default": 2,
-        "hint": "所有会话共享。正整数；不是每个群的消息频率。"
-      },
-      "proactive_concurrency": {
-        "type": "int",
-        "description": "主动聊天最大并发数",
-        "default": 2
-      },
-      "proactive_timeout_seconds": {
-        "type": "int",
-        "description": "一轮主动聊天最长执行时间（秒）",
-        "default": 180,
-        "hint": "与判断模型的超时分开；到期中止任务，但已发送消息不能撤回。"
-      }
-    }
-  },
-  "diagnostics": {
-    "type": "object",
-    "description": "运行检查台与临时诊断",
-    "items": {
-      "capture_raw": {
-        "type": "bool",
-        "description": "临时保留原始上下文",
-        "default": false,
-        "hint": "默认只记录步骤、耗时与分数。打开后上下文仅暂存在内存，供已登录 Dashboard 的管理者查看；不保存请求头和配置凭据。关闭或保存配置会清空旧记录。"
-      },
-      "max_runs": {
-        "type": "int",
-        "description": "最多保留的运行记录数",
-        "default": 50
-      },
-      "retention_minutes": {
-        "type": "int",
-        "description": "记录保留时间（分钟）",
-        "default": 30
-      },
-      "max_memory_mb": {
-        "type": "int",
-        "description": "诊断记录内存上限（MiB）",
-        "default": 10,
-        "hint": "超过容量时淘汰旧记录；单步正文过大则明确标记未保留全文，不悄悄截断。"
-      }
-    }
+    "default": [],
+    "hint": "列表为空时对所有支持的已知会话生效；添加任何组即为白名单。空组可保存但没有目标，只会警告。本组功能可覆盖对应全局功能开关，但不能覆盖最上方的插件总开关。",
+    "obvious_hint": true
   }
 }
