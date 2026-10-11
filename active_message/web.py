@@ -169,15 +169,55 @@ class PageAPI:
             if candidate.agenda_catalog_errors:
                 result["errors"] = {**result["errors"], "agenda_catalog": candidate.agenda_catalog_errors}
             if "calendar_month" in data:
+                from .agenda import Agenda
                 from .schedule import get_timezone
-                sid = candidate.config.groups[index].sids[0] if index >= 0 and candidate.config.groups[index].sids else None
+                candidate.scopes.inherit_observations(self.plugin.scopes)
+                # The card list retains its editing scope when the calendar is
+                # narrowed to a SID. Date filtering is a separate projection.
+                list_catalog = copy.deepcopy(entry.raw["agenda"])
+                known = {e.get("id") for e in list_catalog["events"]}
+                list_catalog["events"].extend(e for e in candidate.raw["agenda"]["events"]
+                    if not e.get("group_id") and not e.get("target_sids") and e.get("id") not in known)
+                list_catalog["events"].extend(e for e in candidate.raw["agenda"]["events"] if e.get("target_sids") and
+                    (index < 0 or any(candidate.scopes.match(sid)[1] is candidate.config.groups[index] for sid in e["target_sids"])))
+                if index < 0:
+                    group_ids = {g.get("agenda_id") for g in candidate.raw["session_groups"]}
+                    list_catalog["events"].extend(e for e in candidate.raw["agenda"]["events"] if e.get("group_id") and e["group_id"] not in group_ids)
+                list_timezone = entry.config.timezone
+                list_sid = candidate.config.groups[index].sids[0] if index >= 0 and candidate.config.groups[index].sids else None
+                list_name = list_timezone or self.plugin.context.get_config(umo=list_sid).get("timezone", "") or ""
+                try:
+                    list_now = datetime.now(get_timezone(list_name))
+                except (KeyError, ValueError):
+                    list_now = datetime.now(get_timezone(""))
+                result["agenda_list"] = await asyncio.to_thread(
+                    Agenda(list_catalog, timezone_name=list_timezone, max_events=1000).list_preview,
+                    list_now, start_date=data.get("agenda_start_date", ""), end_date=data.get("agenda_end_date", ""))
+                selected_sid = data.get("calendar_sid", "")
+                if not isinstance(selected_sid, str):
+                    raise ValueError("日历会话筛选需要完整 SID。")
+                if selected_sid:
+                    from .sessions import split_sid
+                    split_sid(selected_sid)
+                    entry = candidate.for_sid(selected_sid)
+                    calendar_agenda = entry.agenda
+                else:
+                    catalog = copy.deepcopy(entry.raw["agenda"])
+                    targeted = [e for e in candidate.raw["agenda"]["events"] if e.get("target_sids") and
+                                (index < 0 or any(candidate.scopes.match(sid)[1] is candidate.config.groups[index]
+                                                  for sid in e["target_sids"]))]
+                    catalog["events"].extend(targeted)
+                    origins = {e["id"]: "本组" for e in catalog["events"] if e.get("group_id")}
+                    origins.update({e["id"]: "指定会话：" + "、".join(e["target_sids"]) for e in targeted})
+                    calendar_agenda = Agenda(catalog, origins=origins, timezone_name=entry.config.timezone, max_events=1000)
+                sid = selected_sid or (candidate.config.groups[index].sids[0] if index >= 0 and candidate.config.groups[index].sids else None)
                 name = entry.config.timezone or self.plugin.context.get_config(umo=sid).get("timezone", "") or ""
                 try:
                     tz = get_timezone(name)
                 except (KeyError, ValueError):
                     tz = get_timezone("")
                 now = datetime.now(tz)
-                result["calendar"] = entry.agenda.month(data["calendar_month"] or now.strftime("%Y-%m"), now)
+                result["calendar"] = calendar_agenda.month(data["calendar_month"] or now.strftime("%Y-%m"), now)
                 result["calendar"]["timezone_note"] = "未单独设置时区时，以本组首个 SID 的框架时区预览；实际各会话使用自己的时区。" if index >= 0 else "未单独设置时区时，以框架默认时区预览。"
             return self._response(result)
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
@@ -229,7 +269,10 @@ class PageAPI:
                        "theme": {"auto", "light", "dark"}, "tutorial_seen": {True, False}}
             patch = {}
             for key, value in data.items():
-                if key not in allowed or not isinstance(value, (str, bool)) or value not in allowed[key]:
+                if key == "agenda_page_size":
+                    if type(value) is not int or not 1 <= value <= 100:
+                        raise ValueError("每页日程数量需要 1～100 的整数。")
+                elif key not in allowed or not isinstance(value, (str, bool)) or value not in allowed[key]:
                     raise ValueError("页面偏好字段或取值无效。")
                 patch[key] = value
             async with self._prefs_lock:

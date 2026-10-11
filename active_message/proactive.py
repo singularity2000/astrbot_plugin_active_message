@@ -8,7 +8,6 @@ import time
 from typing import Any
 from astrbot.core.agent.tool import FunctionTool
 from .native import session_allows_plugin
-from .schedule import current_mood
 from .prompts import render_template
 from .diagnostics import exception_details
 
@@ -42,12 +41,13 @@ class _SendContextProxy:
 class SessionBoundSendTool(FunctionTool):
     """仅替换本次请求的发送工具；不修改全局工具实例或核心源码。"""
 
-    def __init__(self, original: Any, plugin: Any, sid: str) -> None:
+    def __init__(self, original: Any, plugin: Any, sid: str, feature: str = "proactive") -> None:
         super().__init__(name=original.name, description=original.description,
                          parameters=copy.deepcopy(original.parameters), active=original.active)
         self.original = original
         self.plugin = plugin
         self.sid = sid
+        self.feature = feature
 
     def _block_reason(self, event: Any, target: str) -> str:
         if target != self.sid or event.unified_msg_origin != self.sid:
@@ -55,21 +55,19 @@ class SessionBoundSendTool(FunctionTool):
         if not self.plugin._available():
             return "插件已停用或暂不可用"
         config = self.plugin._config_for(self.sid)
-        if (not config.enabled or not config.proactive_enabled
-                or not self.plugin._feature_valid(self.sid, "proactive")):
-            return "本会话主动聊天已关闭或配置无效"
+        if (not config.enabled or not getattr(config, self.feature + "_enabled")
+                or not self.plugin._feature_valid(self.sid, self.feature)):
+            return "本会话自主发言已关闭或配置无效"
         if not self.plugin.scopes.match(self.sid)[0]:
             return "本会话已不在插件生效范围内"
         if not session_allows_plugin(self.plugin.context, self.sid, self.plugin.PLUGIN_ID):
             return "主框架已禁止本会话使用插件或 LLM"
         now = self.plugin._now(self.sid)
-        if current_mood(now, config.sleep_hours, config.active_hours) == "睡眠":
-            return "已进入睡眠时段"
-        agenda_reason = self.plugin._agenda_block(self.sid, "proactive")
+        agenda_reason = self.plugin._agenda_block(self.sid, self.feature)
         if agenda_reason:
-            return "日程已暂停主动聊天：" + agenda_reason
+            return "自主发言已暂停：" + agenda_reason
         state = self.plugin.runtime.get(self.sid)
-        if (not event.get_extra("_active_message_sent", False)
+        if (self.feature == "proactive" and not event.get_extra("_active_message_sent", False)
                 and state.last_bot_date == now.date().isoformat()
                 and state.daily_proactive_sent >= config.proactive_daily_limit):
             return "本会话已达到今日成功主动发言轮次上限"

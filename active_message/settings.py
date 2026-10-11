@@ -131,6 +131,13 @@ class Settings:
             populate_agenda_choices(self.schema, self.raw)
         self.config = PluginConfig.from_raw(self.raw)
         self.agenda_catalog_errors = list(Agenda(self.raw["agenda"], max_events=1000).errors)
+        target_counts = {}
+        for event in self.raw["agenda"]["events"]:
+            for sid in event.get("target_sids", []) if isinstance(event.get("target_sids", []), list) else []:
+                if isinstance(sid, str):
+                    target_counts[sid] = target_counts.get(sid, 0) + 1
+        if any(count > 100 for count in target_counts.values()):
+            self.agenda_catalog_errors.append(("agenda.events.target_sids", "每个指定会话最多 100 条专属日程。"))
         group_ids = [g.get("agenda_id", "") for g in self.raw["session_groups"] if isinstance(g.get("agenda_id"), str) and g["agenda_id"]]
         if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", ident) for ident in group_ids):
             self.shape_errors.append(("session_groups.agenda_id", "日程分组标识使用 1～80 位字母、数字、下划线或短横线。"))
@@ -147,7 +154,7 @@ class Settings:
             self.scopes = SessionScopes(PluginConfig.from_raw({**self.raw, "session_groups": []}))
         global_raw = copy.deepcopy(self.raw)
         global_raw["session_groups"] = []
-        global_raw["agenda"]["events"] = [e for e in global_raw["agenda"]["events"] if not e.get("group_id")]
+        global_raw["agenda"]["events"] = [e for e in global_raw["agenda"]["events"] if not e.get("group_id") and not e.get("target_sids")]
         self.global_entry = self._entry(global_raw)
         self.warnings = []
         for index, group in enumerate(self.config.groups):
@@ -155,6 +162,7 @@ class Settings:
                 self.warnings.append({"code": "EMPTY_SESSION_GROUP", "group_index": index, "message": f"会话组 {index + 1} 没有 SID，不会作用于任何会话；列表非空时仍为白名单模式。"})
         self.groups = []
         self._by_identity = {}
+        self._sid_entries = {}
         for index, group in enumerate(self.config.groups):
             item = self.raw["session_groups"][index]
             merged = copy.deepcopy(global_raw)
@@ -189,6 +197,10 @@ class Settings:
             local_events = [e for e in self.raw["agenda"]["events"] if item.get("agenda_id") and e.get("group_id") == item["agenda_id"]]
             merged["agenda"]["events"] = copy.deepcopy(global_events + local_events)
             merged["agenda"]["enabled"] = feature_enabled(item.get("agenda_mode"), global_raw["agenda"]["enabled"])
+            for key in ("preview_days", "max_items"):
+                value = item.get("agenda_" + key, "跟随全局")
+                if value != "跟随全局":
+                    merged["agenda"][key] = value
             entry = self._entry(merged, {e["id"]: "本组" for e in local_events if isinstance(e["id"], str)})
             if item.get("agenda_mode") not in {"跟随全局", "开启", "关闭"}:
                 entry.errors["agenda"].append(("agenda_mode", "请选择跟随全局、开启或关闭。"))
@@ -211,7 +223,9 @@ class Settings:
     def any_enabled(self, feature=None):
         if not self.config.enabled:
             return False
-        entries = self.groups if self.config.groups else [self.global_entry]
+        entries = list(self.groups) if self.config.groups else [self.global_entry]
+        if feature in (None, "agenda") and self.raw["agenda"].get("outside_scope"):
+            entries.append(self.global_entry)
         for entry in entries:
             cfg = entry.config
             if feature in (None, "agenda") and entry.agenda.enabled and entry.valid("agenda"):
@@ -226,7 +240,7 @@ class Settings:
     def _entry(self, raw, origins=None):
         config = PluginConfig.from_raw(raw)
         errors = validate_config(config, raw)
-        agenda = Agenda(raw.get("agenda", {}), origins=origins, timezone_name=config.timezone)
+        agenda = Agenda(raw.get("agenda", {}), origins=origins, timezone_name=config.timezone, max_events=1000)
         errors["agenda"] = agenda.errors
         if origins is None and len(raw.get("agenda", {}).get("events", [])) > 100:
             errors["agenda"].append(("agenda.events", "全局最多 100 条日程。"))
@@ -244,7 +258,20 @@ class Settings:
         return self._by_identity.get(id(group), self.global_entry)
 
     def for_sid(self, sid):
-        return self.for_group(self.scopes.match(sid)[1])
+        entry = self.for_group(self.scopes.match(sid)[1])
+        key = (sid, id(entry))
+        if key in self._sid_entries:
+            return self._sid_entries[key]
+        targeted = [e for e in self.raw["agenda"]["events"] if sid in e.get("target_sids", [])]
+        if not targeted:
+            return entry
+        raw = copy.deepcopy(entry.raw)
+        raw["agenda"]["events"].extend(copy.deepcopy(targeted))
+        origins = {e["id"]: "本组" for e in entry.raw["agenda"]["events"] if e.get("group_id")}
+        origins.update({e["id"]: "指定会话" for e in targeted})
+        result = self._entry(raw, origins)
+        self._sid_entries[key] = result
+        return result
 
     def all_errors(self):
         result = {"全局": self.global_entry.errors}
@@ -276,6 +303,9 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
         except (ValueError, KeyError, TypeError, RuntimeError, DecisionError):
             errors[section].append((path, hint))
     if config.interjection_enabled or config.proactive_enabled:
+        check("shared", "proactive_chat.timezone", lambda: get_timezone(config.timezone), "请输入有效 IANA 时区，例如 Asia/Shanghai。")
+        check("shared", "proactive_chat.sleep_hours", lambda: parse_time_ranges(config.sleep_hours),
+              "睡眠时段格式应为 HH:MM-HH:MM；多个时段使用英文逗号分隔。")
         if config.missing_group_history not in {"skip", "runtime"}:
             errors["shared"].append(("context.missing_group_history", "请选择 skip 或 runtime。"))
     if config.interjection_enabled:

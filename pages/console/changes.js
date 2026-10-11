@@ -11,7 +11,7 @@
     return keys.length===other.length&&keys.every(k=>Object.hasOwn(b,k)&&equal(a[k],b[k]));
   }
   const clocks=new Set(['timezone','sleep_hours','active_hours','active_interval_multiplier']);
-  const groupSections={interjection_mode:'智能插话',threshold_override:'智能插话',decision_mode:'智能插话',interjection_overrides:'智能插话',decision_overrides:'智能插话',interjection_weights:'智能插话',interjection_activity:'智能插话',interjection_energy:'智能插话',cooldown_override:'会话组',proactive_mode:'主动聊天',context_overrides:'上下文与诊断',agenda_mode:'作息与日程',agenda_exclusions:'作息与日程'};
+  const groupSections={interjection_mode:'智能插话',threshold_override:'智能插话',decision_mode:'智能插话',interjection_overrides:'智能插话',decision_overrides:'智能插话',interjection_weights:'智能插话',interjection_activity:'智能插话',interjection_energy:'智能插话',cooldown_override:'会话组',proactive_mode:'主动聊天',context_overrides:'上下文与诊断',agenda_mode:'作息与日程',agenda_exclusions:'作息与日程',agenda_preview_days:'作息与日程',agenda_max_items:'作息与日程'};
   const globalSections={enabled:'运行总览',interjection:'智能插话',activation_prompts:'智能插话',context:'上下文与诊断',diagnostics:'上下文与诊断',runtime:'上下文与诊断'};
   function createTracker(){
     let baseline=null,groupIds=new WeakMap(),baseGroups=[],baseByKey=new Map(),serial=0;
@@ -84,9 +84,9 @@
         }
         const agendaMeta=schema.agenda?.items||{};
         walk(Object.fromEntries(Object.entries(saved.agenda||{}).filter(([k])=>k!=='events')),Object.fromEntries(Object.entries(current.agenda||{}).filter(([k])=>k!=='events')),agendaMeta,['全局','作息与日程']);
-        const events=current.agenda?.events||[],oldEvents=saved.agenda?.events||[],eventFields={...(agendaMeta.events?.templates?.event?.items||{}),group_id:{description:'日程适用范围'}};
+        const events=current.agenda?.events||[],oldEvents=saved.agenda?.events||[],eventFields={...(agendaMeta.events?.templates?.event?.items||{}),group_id:{description:'日程适用范围'},target_sids:{type:'list',description:'指定会话 SID'}};
         if(!equal(events,oldEvents)){
-          const scope=(e,sourceGroups)=>{if(!e.group_id)return '全局';const i=sourceGroups.findIndex(g=>g.agenda_id===e.group_id);return i<0?'未关联会话组':groupName(sourceGroups[i],i);};
+          const scope=(e,sourceGroups)=>{if(e.target_sids?.length)return '指定会话';if(!e.group_id)return '全局';const i=sourceGroups.findIndex(g=>g.agenda_id===e.group_id);return i<0?'未关联会话组':groupName(sourceGroups[i],i);};
           const ordinals=rows=>{const counts=new Map(),result=new Map();for(const e of rows){const n=(counts.get(e.group_id||'')||0)+1;counts.set(e.group_id||'',n);result.set(e,n);}return result;};
           const newOrdinals=ordinals(events),oldOrdinals=ordinals(oldEvents);
           const label=(e,sourceGroups)=>[scope(e,sourceGroups),'作息与日程','日程「'+(e.title||'未命名日程')+'」（'+((sourceGroups===groups?newOrdinals:oldOrdinals).get(e))+'）'];

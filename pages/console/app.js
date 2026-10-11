@@ -15,7 +15,7 @@
   let draggedGroup=null;
   const changeTracker=window.ActiveMessageChanges.createTracker();
   let lastChangeLocations=[];
-  const agendaUI=window.createAgendaUI({state,dirty,render,previewSoon,field,section});
+  const agendaUI=window.createAgendaUI({state,dirty,render,previewSoon,field,section,persistPrefs});
 
   function notice(text, bad=false) {
     $('notice').textContent=text || ''; $('notice').hidden=!text; $('notice').classList.toggle('error',bad);
@@ -68,11 +68,11 @@
     state.config.session_groups.forEach((g,i)=>select.add(new Option((i+1)+'. '+(g.name||'未命名组'),String(i))));
     if(state.scope>=state.config.session_groups.length)state.scope=-1;
     select.value=String(state.scope);
-    $('scope-note').textContent=state.scope<0?'为跟随全局的会话设置默认行为':'正在编辑本组；留空的参数跟随全局';
+    $('scope-note').textContent=state.scope<0?'为跟随全局的会话设置默认行为':'正在编辑本组；日程天数和条数填“跟随全局”继承，其他参数通常留空继承';
     $('scope-effective').textContent='';
     $('scope-bar').classList.toggle('group-scope',state.scope>=0);
   }
-  $('scope').onchange=()=>{state.scope=Number($('scope').value);state.effective=null;state.previewSeq++;render();};
+  $('scope').onchange=()=>{state.scope=Number($('scope').value);state.calendarSid='';state.effective=null;state.previewSeq++;render();};
   function phaseFor(path) {
     if(path.includes('decision')&&['prompt','jev_state_template'].includes(path.at(-1)))return 'decision';
     if(path.at(-1)==='activation_prompts')return 'activation';
@@ -95,26 +95,33 @@
       max_interval_minutes:'正常时段随机等待的上限，不能小于最短间隔。',
       daily_limit:'每个会话每天最多成功主动聊天多少轮；分段发送仍算一轮。',
       timezone:'用于作息、日程和每日次数统计，例如 Asia/Shanghai。',
-      sleep_hours:'睡眠时段不主动聊天；本组留空跟随全局，填“无”表示本组不设置。',
+      sleep_hours:'睡眠时段不主动聊天，也不智能插话；正常 @ 回复照常。本组留空跟随全局，填“无”表示不设置。',
       active_hours:'活跃时段会缩短主动聊天等待；本组留空跟随全局，填“无”表示本组不设置。',
       active_interval_multiplier:'数值越小，活跃时段等待越短；1 表示不缩短。',
       history_messages:'只限制判断参考资料，不删改聊天历史；0 表示先选全部。',
       recent_messages:'需要 AstrBot 已开启群消息历史保存；0 表示先选全部。',
       missing_group_history:'skip 更稳妥；runtime 会使用可能不完整的插件短期摘要。',
       proactive_timeout_seconds:'留空跟随主框架；填写正整数才增加插件整轮时限，不改变模型和工具自身的限制。',
-      agenda_mode:'跟随全局、只开启或只关闭本组日程意识；关闭不会删除日程。',
+      agenda_mode:'跟随全局、只开启或只关闭本组日程功能；关闭不会删除日程。',
+      preview_days:'默认 7；留空不限；0 关闭自动日程背景，仍可使用工具。',
+      max_items:'留空不限制；正整数分别限制当前与未来安排条数。',
+      agenda_preview_days:'默认填入“跟随全局”；填写数字覆盖全局；留空表示本组不限；填 0 关闭自动日程背景，仍可使用日程工具。',
+      agenda_max_items:'默认填入“跟随全局”；填写正整数覆盖全局；留空表示本组不限。',
+      outside_scope:'允许范围外会话知晓全局日程、查询并创建自己的日程。',
+      background_description:'所有会话共用；留空恢复默认，日程 JSON 自动附加。',
       repeat:'不重复、每天、每周、每年或 Cron；不熟悉 Cron 时建议选每天或每周。',
       time_mode:'全天整天有效；时段按起止时间有效，结束早于开始表示跨午夜。',
       pause_interjection:'勾选后，日程期间暂停插件自行插话；正常 @ 回复不受影响。',
       pause_proactive:'勾选后，日程期间暂停插件自行主动聊天；正常 @ 回复不受影响。'
     };
+    if(inherit&&path[0]==='agenda'&&['preview_days','max_items'].includes(key))return critical['agenda_'+key];
     if(!critical[key])return '';
     return inherit?'留空跟随全局；'+critical[key].replace(/^本组留空跟随全局；/,'') : critical[key];
   }
   function field(key,meta,obj,path,inherit=false) {
     if(meta.type==='object') {
       obj[key]??={};const box=el('details',undefined,'form-section');box.open=true;const heading=el('summary',meta.description||key);if(meta.hint)heading.append(help(meta.description||key,meta.hint));box.append(heading);
-      appendFields(box,obj[key],meta.items,path,inherit);return box;
+      const fields=el('div',undefined,'form-fields');appendFields(fields,obj[key],meta.items,path,inherit);box.append(fields);return box;
     }
     const row=el('div',undefined,'field');row.dataset.path=path.join('.');
     const labelBox=el('div',undefined,'field-label'),ctl=el('div',undefined,'control');
@@ -122,6 +129,8 @@
     if(meta.hint){labelBox.append(help(meta.description||key,meta.hint,id+'-hint'));const inline=inlineHint(path,meta.hint,inherit);if(inline)labelBox.append(el('small',inline,'field-hint'));}
     const value=obj[key]??meta.default, phase=phaseFor(path);let input;
     if(phase)row.classList.add('template-field');
+    if(phase||['text','list'].includes(meta.type)||key==='jev_endpoint')row.classList.add('field-wide');
+    if(meta.type==='bool')row.classList.add('toggle-field');
     if(meta.type==='list') {
       if(!Array.isArray(obj[key]))obj[key]=[];
       label.removeAttribute('for');label.id=id+'-label';
@@ -153,6 +162,9 @@
       } else {
         if(['int','float'].includes(meta.type)){input.type='number';input.step=meta.type==='int'?'1':'any';}
         if(key==='proactive_timeout_seconds'){input.inputMode='numeric';input.placeholder='留空：跟随主框架';}
+        if(['preview_days','max_items','agenda_preview_days','agenda_max_items'].includes(key)){
+          input.placeholder=key.startsWith('agenda_')?'跟随全局 / 数字 / 留空不限':'留空：不限制';
+        }
         input.oninput=()=>changed(obj,key,['int','float'].includes(meta.type)?(input.value===''?'':Number(input.value)):input.value);
         bindTemplate(input,phase,meta.description);
       }
@@ -166,8 +178,9 @@
     row.append(labelBox,ctl);return row;
   }
   function appendFields(box,obj,fields,prefix=[],inherit=false) { for(const [key,meta] of Object.entries(fields))box.append(field(key,meta,obj,[...prefix,key],inherit)); }
-  function briefValue(value){
+  function briefValue(value,unlimited=false){
     if(value===undefined)return '计算中…';
+    if(unlimited&&blank(value))return '不限';
     if(typeof value==='boolean')return value?'开启':'关闭';
     if(Array.isArray(value))return value.length+' 项';
     const text=String(value??'');return text.length>90?text.slice(0,90)+'…':(text||'空');
@@ -175,11 +188,11 @@
   function effectiveHints() {
     let count=0;
     document.querySelectorAll('.effective').forEach(n=>{
-      const path=JSON.parse(n.dataset.path),value=n._obj[n._key],overridden=!blank(value)&&value!=='跟随全局';
+      const path=JSON.parse(n.dataset.path),value=n._obj[n._key],agendaNumber=['agenda_preview_days','agenda_max_items'].includes(n._key),overridden=agendaNumber?value!=='跟随全局':!blank(value)&&value!=='跟随全局';
       const globalValue=get(state.config,path),effective=get(state.effective,path),same=JSON.stringify(globalValue)===JSON.stringify(effective);
       n.closest('.field').classList.toggle('overridden',overridden);if(overridden)count++;
       n.querySelector('.override-badge').textContent=overridden?(same?'本组固定 · 当前与全局相同':'本组覆盖'):'跟随全局';
-      const text=n.querySelector('.effective-value');text.textContent=(overridden?'全局：'+briefValue(globalValue)+' → ':'')+'实际值：'+briefValue(effective);
+      const text=n.querySelector('.effective-value');text.textContent=(overridden?'全局：'+briefValue(globalValue,agendaNumber)+' → ':'')+'实际值：'+briefValue(effective,agendaNumber);
       n.querySelector('.inherit-reset').hidden=!overridden;
     });
     const summary=$('override-count');if(summary)summary.textContent='本页覆盖 '+count+' 项';
@@ -200,9 +213,9 @@
     if(!state.config||state.busy)return;
     const seq=++state.previewSeq,scope=state.scope;
     try {
-      const result=await api('preview',{config:clone(state.config),group_index:scope,...(state.tab==='schedule'?{calendar_month:state.calendarMonth||''}:{})});
+      const result=await api('preview',{config:clone(state.config),group_index:scope,...(state.tab==='schedule'?{calendar_month:state.calendarMonth||'',calendar_sid:state.calendarSid||'',...agendaUI.previewParams()}:{})});
       if(seq!==state.previewSeq||scope!==state.scope)return;
-      state.effective=result.effective;effectiveHints();showValidation(result.errors,result.warnings);drawScore();scheduleStrip();if(result.calendar)agendaUI.update(result.calendar);
+      state.effective=result.effective;effectiveHints();showValidation(result.errors,result.warnings);drawScore();scheduleStrip();if(result.calendar)agendaUI.update(result.calendar,result.agenda_list);
     } catch(error){if(seq===state.previewSeq)notice('草稿预览未完成：'+error.message,true);}
   }
   function render() {
@@ -219,7 +232,7 @@
     const intro=section('什么时候开口，由插件把关','智能插话：在群聊中接话。主动聊天：隔一段时间主动找人聊。插件只决定何时唤醒机器人；回复仍由 AstrBot 原来的聊天助手生成，沿用原会话的人格、历史和可用工具。');intro.classList.add('intro');intro.id='overview-intro';
     const flow=el('div',undefined,'flow');['收到消息','读取文字与已有转述','判断与加权','超过阈值才开口'].forEach(t=>flow.append(el('span',t)));intro.append(flow);root.append(intro);
     if(!state.preferences.tutorial_seen){const welcome=section('第一次使用？','用一分钟认识范围、开关和决策回放。教程不会改配置，也不会发送消息。');const b=el('button','开始新手引导','primary');b.onclick=startTour;welcome.append(b);root.append(welcome);}
-    const control=section('插件总开关','关闭后，所有会话的智能插话、主动聊天和日程意识都停止。会话组只能单独设置对应的功能开关，不能覆盖这个总开关。');control.id='global-switch';appendFields(control,state.config,{enabled:state.schema.enabled});root.append(control);
+    const control=section('插件总开关','关闭后，所有会话的智能插话、主动聊天和日程功能都停止。会话组只能单独设置对应的功能开关，不能覆盖这个总开关。');control.id='global-switch';appendFields(control,state.config,{enabled:state.schema.enabled});root.append(control);
     const d=state.status||{sessions:[],runs:[]};const box=section('已保存配置的会话状态','下表是运行状态，不是尚未保存的草稿。每个 SID 独立计数；开关开启代表允许运行，不保证立即发言。');
     const tools=el('div',undefined,'actions'),refresh=el('button','刷新状态'),live=el('input');live.type='checkbox';live.checked=state.live;live.onchange=()=>state.live=live.checked;const label=el('label');label.append(live,document.createTextNode(' 页面可见时每 5 秒刷新'));refresh.onclick=()=>refreshStatus().catch(fail);tools.append(refresh,label);box.append(tools);
     if(!d.sessions.length)box.append(el('p','还没有可展示的会话。可先添加完整 SID，或等待支持的会话收到消息。','empty'));
@@ -287,7 +300,7 @@
       renderScore(root);renderPlaceholders(root,['decision','activation']);
     } else if(['proactive','schedule'].includes(state.tab)) {
       const clocks=['timezone','sleep_hours','active_hours','active_interval_multiplier'],isSchedule=state.tab==='schedule';
-      const box=section(isSchedule?'作息管理':'主动聊天',isSchedule?'这里只安排每天何时暂停或更频繁地主动聊天，不限制智能插话、正常 @ 回复或原生未来任务。睡眠时段优先于活跃时段。需要按日期安排、或暂停智能插话，请使用下方“日程管理”。':'到计划时间才尝试。每日上限统计成功发言的轮次，不是模型调用次数。');box.id='feature-settings';root.append(box);
+      const box=section(isSchedule?'作息管理':'主动聊天',isSchedule?'睡眠时段同时暂停主动聊天和智能插话；正常 @ 回复与原生未来任务照常。活跃时段只缩短主动聊天等待，重叠时优先睡眠。按日期安排请使用下方日程管理。':'到计划时间才尝试。每日上限统计成功发言的轮次，不是模型调用次数。');box.id='feature-settings';root.append(box);
       if(group)box.append(field('proactive_mode',gs.proactive_mode,group,['proactive_chat','enabled'],true));
       const obj=group?group.proactive_overrides:state.config.proactive_chat,metas=group?gs.proactive_overrides.items:state.schema.proactive_chat.items;
       appendFields(box,obj,Object.fromEntries(Object.entries(metas).filter(([k])=>isSchedule?clocks.includes(k):!clocks.includes(k))),['proactive_chat'],!!group);
@@ -297,6 +310,9 @@
       appendFields(box,group?group.context_overrides:state.config.context,group?gs.context_overrides.items:state.schema.context.items,['context'],!!group);
       if(!group){const diag=section('运行记录与排查','默认就能查看执行阶段、耗时和发送结果；需要检查请求或响应文字时，再开启文字快照。快照可能包含聊天正文，已知密钥和媒体编码会隐藏，过长文字会标明缩减。');appendFields(diag,state.config.diagnostics,state.schema.diagnostics.items,['diagnostics']);root.append(diag);const resources=section('运行资源与超时','设置所有会话合计的并发额度。主动聊天额外总时限默认留空，模型和工具沿用主框架自身的限制；填写正整数才增加插件整轮时限，不影响智能插话的判断请求超时。');appendFields(resources,state.config.runtime,state.schema.runtime.items,['runtime']);root.append(resources);}
     }
+    root.querySelectorAll('.section,.form-fields').forEach(box=>{
+      if(box.querySelector(':scope > .field'))box.classList.add('settings-grid');
+    });
   }
   function renderScore(root) {
     const box=section('用一组分数试试看','这只是试算，不调用模型、不发送消息，也不保存下面的示例分数。精力不是禁言开关；最终结果取决于当前权重和阈值。');box.id='score-lab';
@@ -413,11 +429,11 @@
     const steps=[
       ['overview','overview-intro','两种开口方式','智能插话回应正在进行的话题；主动聊天在合适的时间主动找人聊天。教程只介绍，不会发送消息。'],
       ['groups','groups-intro','先决定在哪些会话生效','建议先添加一个测试组，填入测试会话的 SID（会话地址）。只要添加了组，插件就只在组内会话生效；没有任何组时，范围是所有支持的已知会话。排序只调整列表位置，保存后生效。'],
-      ['overview','global-switch','总开关始终有效','最上方“启用主动会话插件”关闭时，所有会话都停止。本组“开启／关闭”只覆盖相应的智能插话、主动聊天或日程意识开关；选择“跟随全局”则使用对应默认值。'],
+      ['overview','global-switch','总开关始终有效','最上方“启用主动会话插件”关闭时，所有会话都停止。本组“开启／关闭”只覆盖相应的智能插话、主动聊天或日程功能开关；选择“跟随全局”则使用对应默认值。'],
       ['interjection','score-lab','分数不是发言概率','用示例滑块观察权重与阈值。精力为零只是这一项低，并不一定阻止插话。等于阈值不触发。'],
       ['interjection','feature-settings','判断和说话是两步','“判断提示词”指导模型打分；“智能插话发言提示词列表”指导机器人如何接话。顶部可切换会话组，单独填写判断提示词和补充模板；留空跟随全局，醒目的徽标标出本组覆盖。'],
       ['interjection','placeholder-panel','不用背占位符','点击提示词输入框，底部临时助手只显示这个输入框可用的占位符。点击插入光标位置，有选中文字则替换；Esc 收起。这里的大全可以查说明与示例。'],
-      ['schedule','agenda-settings','先从一条午休开始','开启日程意识，添加午休，选起止时间和重复方式；每周可以勾选多天。按需要暂停插件插话或主动聊天；都不勾选时只让机器人知道。不创建或拦截原生未来任务。'],
+      ['schedule','agenda-settings','先从一条午休开始','开启日程功能，添加午休，选起止时间和重复方式；每周可以勾选多天。按需要暂停插件插话或主动聊天；都不勾选时只让机器人知道。不创建或拦截原生未来任务。'],
       ['schedule','agenda-calendar','日历展示草稿，保存后才生效','日历预览按当前日程草稿计算，点击某天看详情。会话组共享全局日程，也可新增或排除。保存时，日程写入独立数据文件，开关和会话组设置写入原生配置。'],
       ['context','context-settings','判断材料不必越多越好','复用已有文字与图片转述，按预算去掉较旧材料。这里不会删改原生历史，真正发言仍由 AstrBot 原来的聊天助手完成。'],
       ['traces','trace-intro','看懂为什么没有开口','选一轮运行，点击“刷新记录”更新阶段和耗时。等待模型、一次尝试未成功、整轮最终失败和因睡眠放弃发送是不同情况；查看这些信息不需要开启文字快照。']

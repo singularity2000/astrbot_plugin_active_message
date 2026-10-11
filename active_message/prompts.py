@@ -7,7 +7,7 @@ from typing import Any
 
 PLACEHOLDER_DESCRIPTIONS = {
     "schedule_current": "本会话正在进行的日程；日程关闭或没有事项时为空列表",
-    "schedule_upcoming": "本会话未来七天内各项日程的下一次安排（最多十二项）",
+    "schedule_upcoming": "本会话预览范围内各项日程的下一次安排，范围和条数按日程设置；预览为 0 时为空",
     "persona_prompt": "当前会话人格提示词的文字副本，受单条预算限制（不是完整 Agent 系统提示）",
     "persona_name": "当前会话生效的人格名称",
     "conversation_history": "当前 AstrBot 分支历史的文字副本，已去媒体编码并受预算限制",

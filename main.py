@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.2.2"
+PLUGIN_VERSION = "1.3.0"
 
 import asyncio
 import json
@@ -12,18 +12,21 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
 
-from astrbot.api import logger as fallback_logger
+from astrbot.api import ToolSet, logger as fallback_logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.platform.message_type import MessageType
 
-from .active_message.agenda import context_text, publish_agenda_schema, AgendaStore, AgendaStoreError
+from .active_message.agenda import (
+    AgendaStore, AgendaStoreError, ScheduleTool,
+    context_text, prepare_events, publish_agenda_schema,
+)
 from .active_message.context_input import ContextUnavailable, read_context
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
 from .active_message.diagnostics import Observability, TraceStore
-from .active_message.proactive import NativeAgentError, RunProgress, run_proactive_agent
+from .active_message.proactive import NativeAgentError, RunProgress, SessionBoundSendTool, run_proactive_agent
 from .active_message.decisions import DecisionClient, DecisionError
 from .active_message.models import DecisionResult, MessageObservation
 from .active_message.native import (
@@ -35,7 +38,7 @@ from .active_message.runtime import RuntimeStore
 from .active_message.storage import JsonStateFile
 from .active_message.schedule import (
     DeadlineAlarm, PROACTIVE_SCHEDULE_VERSION, choose_proactive_run_at,
-    current_mood, get_timezone,
+    current_mood, get_timezone, in_time_ranges, parse_time_ranges,
 )
 from .active_message.scoring import build_score_breakdown, calculate_activity_score, calculate_energy_score, exceeds_threshold
 
@@ -82,6 +85,10 @@ class ActiveMessagePlugin(Star):
         self._proactive_valid = True
         self._config_errors = {}
         self._warned: set[str] = set()
+        # Native future tasks build their own Agent without OnLLMRequest. The
+        # registered tools derive their SID from that Agent's event as well.
+        self._agenda_tools = [ScheduleTool(self), ScheduleTool(self, create=True)]
+        self.context.add_llm_tools(*self._agenda_tools)
 
     def _entry_for(self, sid: str | None = None):
         return self.settings.for_sid(sid) if sid else self.settings.global_entry
@@ -94,7 +101,7 @@ class ActiveMessagePlugin(Star):
 
     def _now(self, sid: str | None = None) -> datetime:
         cfg = self._config_for(sid)
-        name = (cfg.timezone if ((cfg.proactive_enabled and self._entry_for(sid).valid("proactive")) or (self._entry_for(sid).agenda.enabled and self._entry_for(sid).valid("agenda"))) else "") or self.context.get_config(umo=sid).get("timezone", "") or ""
+        name = cfg.timezone or self.context.get_config(umo=sid).get("timezone", "") or ""
         return datetime.now(get_timezone(name))
 
     def _agenda_now(self, sid: str | None = None) -> datetime:
@@ -107,21 +114,61 @@ class ActiveMessagePlugin(Star):
             return datetime.now(get_timezone(""))
 
     def _agenda_block(self, sid: str, feature: str) -> str:
+        cfg = self._config_for(sid)
+        if in_time_ranges(self._now(sid), parse_time_ranges(cfg.sleep_hours)):
+            return "当前处于睡眠时段，暂停智能插话和主动聊天。"
         agenda = self._entry_for(sid).agenda
         if not agenda.enabled:
             return ""
         titles = agenda.blocked(feature, self._agenda_now(sid))
         return "日程暂停：" + "、".join(titles) if titles else ""
 
+    def agenda_allowed(self, sid: str) -> bool:
+        entry = self._entry_for(sid)
+        return (self._available() and entry.valid("agenda") and entry.agenda.enabled
+                and (self.scopes.match(sid)[0] or self.settings.raw["agenda"]["outside_scope"])
+                and session_allows_plugin(self.context, sid, PLUGIN_ID))
+
+    async def create_schedules(self, sid: str, events: Any, event: AstrMessageEvent) -> dict:
+        async with self._settings_lock:
+            if not self.agenda_allowed(sid):
+                raise ValueError("本会话日程功能已关闭，未创建。")
+            rows = prepare_events(events, sid)
+            # Repeated tool calls in the same Agent event must not duplicate a batch.
+            signature = json.dumps(events, sort_keys=True, ensure_ascii=False)
+            created = event.get_extra("_active_message_created_schedules", {})
+            if signature in created:
+                return created[signature]
+            raw = self.agenda_store.view(self.config_raw)
+            raw["agenda"]["events"].extend(rows)
+            candidate = Settings(raw)
+            errors = candidate.all_errors()
+            agenda_errors = [hint for sections in errors.values() for name, items in sections.items()
+                             if name in {"agenda", "shared"} for _, hint in items]
+            if agenda_errors:
+                raise ValueError("；".join(dict.fromkeys(agenda_errors)))
+            candidate.scopes.inherit_observations(self.scopes)
+            await self.agenda_store.append(self.config_raw, rows, expected_revision=self.agenda_store.revision)
+            self.settings = candidate
+            self.scopes = candidate.scopes
+            self.plugin_config = candidate.config
+            publish_agenda_schema(self.config_raw, candidate.schema)
+            self._alarm.wake()
+            result = {"created": [{key: row[key] for key in request.keys() | {"title", "start_date", "repeat", "time_mode"}}
+                                 for row, request in zip(rows, events)], "sid": sid,
+                      "timezone": str(self._agenda_now(sid).tzinfo), "saved": True}
+            created[signature] = result
+            event.set_extra("_active_message_created_schedules", created)
+            return result
+
     def _inject_agenda(self, event: AstrMessageEvent, run_context: Any) -> None:
         sid = event.unified_msg_origin
         entry = self._entry_for(sid)
-        if (not self._available() or not self.scopes.match(sid)[0] or not entry.valid("agenda")
-                or not entry.agenda.enabled or not session_allows_plugin(self.context, sid, PLUGIN_ID)
-                or event.get_extra("_active_message_agenda_injected", False)):
+        if (not self.agenda_allowed(sid) or event.get_extra("_active_message_agenda_injected", False)):
             return
         from astrbot.core.agent.message import TextPart
-        text = context_text(entry.agenda.snapshot(self._agenda_now(sid)))
+        text = context_text(entry.agenda.snapshot(self._agenda_now(sid), agent=True),
+                            self.settings.raw["agenda"]["background_description"])
         if not text:
             return
         # The native temporary content API excludes these details from saved history.
@@ -229,6 +276,10 @@ class ActiveMessagePlugin(Star):
 
     async def terminate(self) -> None:
         self._closed = True
+        manager = self.context.get_llm_tool_manager()
+        for tool in self._agenda_tools:
+            if manager.get_func(tool.name) is tool:
+                manager.remove_func(tool.name)
         if hasattr(self, "page_api"):
             self.page_api.unregister()
         self.traces.clear()
@@ -458,9 +509,25 @@ class ActiveMessagePlugin(Star):
 
     @filter.on_llm_request(priority=-100)
     async def inject_activation_prompt(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
+        sid = event.unified_msg_origin
+        if req.func_tool:
+            # Copy the request's tool set; never mutate the global/native registry.
+            req.func_tool = ToolSet(list(req.func_tool.tools))
+            for name, create in (("query_schedule", False), ("create_schedule", True)):
+                tool = req.func_tool.get_tool(name)
+                if isinstance(tool, ScheduleTool):
+                    if self.agenda_allowed(sid):
+                        req.func_tool.add_tool(ScheduleTool(self, sid, create=create))
+                    else:
+                        req.func_tool.remove_tool(name)
         meta = event.get_extra(META_KEY, {})
         if not isinstance(meta, dict) or meta.get("plugin") != PLUGIN_ID:
             return
+        if meta.get("trigger_type") == "智能插话" and req.func_tool:
+            send_tool = req.func_tool.get_tool("send_message_to_user")
+            if send_tool is not None:
+                req.func_tool = ToolSet(list(req.func_tool.tools))
+                req.func_tool.add_tool(SessionBoundSendTool(send_tool, self, sid, "interjection"))
         if event.get_extra("_active_message_prompt_injected", False):
             return
         values = meta.get("values")
@@ -487,6 +554,34 @@ class ActiveMessagePlugin(Star):
         self.observer.log("debug", "ACTIVATION_PROMPT_INJECTED", sid=event.unified_msg_origin,
                           run_id=meta["run_id"], trigger_type=meta["trigger_type"],
                           persona_name=values.get("persona_name"), prompt_chars=len(prompt))
+
+    @filter.on_decorating_result(priority=-100)
+    async def suppress_sleeping_interjection(self, event: AstrMessageEvent) -> None:
+        meta = event.get_extra(META_KEY, {})
+        if meta.get("plugin") == PLUGIN_ID and meta.get("trigger_type") == "智能插话":
+            reason = self._agenda_block(event.unified_msg_origin, "interjection")
+            if reason:
+                event.clear_result()
+                event.stop_event()
+                self.traces.finish(meta.get("run_id"), reason)
+                return
+            result = event.get_result()
+            stream = getattr(result, "async_stream", None)
+            if stream is not None and not event.get_extra("_active_message_stream_guard", False):
+                async def guarded_stream():
+                    try:
+                        async for chain in stream:
+                            reason = self._agenda_block(event.unified_msg_origin, "interjection")
+                            if reason:
+                                self.traces.finish(meta.get("run_id"), reason)
+                                break
+                            yield chain
+                    finally:
+                        close = getattr(stream, "aclose", None)
+                        if close is not None:
+                            await close()
+                result.async_stream = guarded_stream()
+                event.set_extra("_active_message_stream_guard", True)
 
     def _release_agent(self, sid: str, event_id: int) -> None:
         """框架错误路径可能不发 done 钩子；事件任务结束后也必须释放忙碌标记。"""
@@ -580,7 +675,8 @@ class ActiveMessagePlugin(Star):
             event.set_extra("_active_message_sent", True)
             if meta.get("progress"):
                 meta["progress"].sent = True
-            self.observer.log("info", "MESSAGE_SENT", sid=sid, run_id=meta.get("run_id"), proactive=proactive,
+            plugin_initiated = meta.get("plugin") == PLUGIN_ID and meta.get("trigger_type") in {"智能插话", "主动聊天"}
+            self.observer.log("info" if plugin_initiated else "debug", "MESSAGE_SENT", sid=sid, run_id=meta.get("run_id"), proactive=proactive,
                               daily_proactive_sent=self.runtime.get(sid).daily_proactive_sent)
             await self._persist_state()
 
@@ -618,10 +714,10 @@ class ActiveMessagePlugin(Star):
                            last_human_at=state.last_human_at, last_bot_at=state.last_bot_at, unreplied_count=self.runtime.unreplied.get(sid, 0))
         values["image_descriptions"] = json.dumps(bundle.images, ensure_ascii=False)
         values["_context_payload"] = bundle.payload()
-        agenda = self._entry_for(sid).agenda.snapshot(self._agenda_now(sid))
+        agenda = self._entry_for(sid).agenda.snapshot(self._agenda_now(sid), agent=True)
         values["schedule_current"] = json.dumps(agenda["current"], ensure_ascii=False)
         values["schedule_upcoming"] = json.dumps(agenda["upcoming"], ensure_ascii=False)
-        if agenda["enabled"]:
+        if agenda.get("current") or agenda.get("upcoming"):
             values["_context_payload"]["schedule"] = agenda
         run_id = event.get_extra("_active_message_run_id") or event.get_extra(META_KEY, {}).get("run_id")
         values["_run_id"] = run_id
