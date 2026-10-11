@@ -111,7 +111,7 @@
                 if(select.value==='global')event.group_id='';else{const owner=state.config.session_groups[Number(select.value)];owner.agenda_id||=freshId();event.group_id=owner.agenda_id;}mark();
               }
             };
-            remove.onclick=async()=>{if(await dialog({title:'删除这条未关联日程？',message:'只修改插件配置草稿，不影响原生未来任务。',confirm:'删除',danger:true})){state.config.agenda.events=state.config.agenda.events.filter(e=>e!==event);mark();}};actions.append(repair,remove);row.append(actions);box.append(row);
+            remove.onclick=async()=>{if(await dialog({title:'删除这条未关联日程？',message:'只修改日程草稿，保存后更新日程数据文件，不影响原生未来任务。',confirm:'删除',danger:true})){state.config.agenda.events=state.config.agenda.events.filter(e=>e!==event);mark();}};actions.append(repair,remove);row.append(actions);box.append(row);
           }
         }
       }
@@ -124,8 +124,8 @@
       const toolbar=el('div',undefined,'calendar-toolbar'),prev=el('button','‹ 上月'),next=el('button','下月 ›'),today=el('button','今天'),heading=el('h3',calendar.month);heading.id='calendar-heading';
       prev.onclick=()=>monthMove(-1);next.onclick=()=>monthMove(1);today.onclick=()=>{state.calendarMonth='';selected='';state.previewSeq++;previewSoon();};
       const monthPicker=el('input');monthPicker.type='month';monthPicker.min='1900-01';monthPicker.max='2199-12';monthPicker.value=calendar.month;monthPicker.setAttribute('aria-label','跳转日历月份');monthPicker.className='calendar-month-picker';monthPicker.onchange=()=>{if(!monthPicker.value||!monthPicker.validity.valid)return;state.calendarMonth=monthPicker.value;state.previewSeq++;selected='';heading.textContent=state.calendarMonth+' · 计算中…';previewSoon();};
-      toolbar.append(heading,monthPicker,prev,today,next);box.append(toolbar,el('p','日历预览 · '+calendar.timezone+' · '+(calendar.enabled?'日程意识已开启':'日程意识未开启，以下仅预览配置'),'muted'));
-      if(calendar.errors?.length){box.append(el('p','日程配置尚有错误，修正后才会计算日历。','warning'));return;}
+      toolbar.append(heading,monthPicker,prev,today,next);box.append(toolbar,el('p','日历预览 · '+calendar.timezone+' · '+(calendar.enabled?'日程意识已开启':'日程意识未开启，以下仅预览日程'),'muted'));
+      if(calendar.errors?.length){box.append(el('p','日程或时间设置尚有错误，修正后才会计算日历。','warning'));return;}
       const grid=el('div',undefined,'calendar-grid');grid.setAttribute('aria-label',calendar.month+' 日历，周一至周日');
       weekdays.forEach(day=>grid.append(el('div',day,'calendar-weekday')));
       if(!calendar.days.some(d=>d.date===selected))selected=calendar.today.startsWith(calendar.month)?calendar.today:calendar.month+'-01';

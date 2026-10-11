@@ -101,6 +101,7 @@
       history_messages:'只限制判断参考资料，不删改聊天历史；0 表示先选全部。',
       recent_messages:'需要 AstrBot 已开启群消息历史保存；0 表示先选全部。',
       missing_group_history:'skip 更稳妥；runtime 会使用可能不完整的插件短期摘要。',
+      proactive_timeout_seconds:'留空跟随主框架；填写正整数才增加插件整轮时限，不改变模型和工具自身的限制。',
       agenda_mode:'跟随全局、只开启或只关闭本组日程意识；关闭不会删除日程。',
       repeat:'不重复、每天、每周、每年或 Cron；不熟悉 Cron 时建议选每天或每周。',
       time_mode:'全天整天有效；时段按起止时间有效，结束早于开始表示跨午夜。',
@@ -151,6 +152,7 @@
         const clear=el('button','清空凭据','danger');clear.onclick=async()=>{if(await dialog({title:'清空这项凭据？',message:'只修改草稿，保存后才会生效。',confirm:'清空',danger:true})){obj[key]='';input.value='';input.placeholder='保存后将清空';dirty();}};ctl.append(clear);
       } else {
         if(['int','float'].includes(meta.type)){input.type='number';input.step=meta.type==='int'?'1':'any';}
+        if(key==='proactive_timeout_seconds'){input.inputMode='numeric';input.placeholder='留空：跟随主框架';}
         input.oninput=()=>changed(obj,key,['int','float'].includes(meta.type)?(input.value===''?'':Number(input.value)):input.value);
         bindTemplate(input,phase,meta.description);
       }
@@ -293,7 +295,7 @@
     } else {
       const box=section('聊天参考资料','设置判断模型和插件补充资料能读取多少聊天记录；不会删改 AstrBot 保存的聊天历史，也不替代聊天助手原本的上下文。没有文字说明的图片、音频等只保留类型标签。');box.id='context-settings';root.append(box);
       appendFields(box,group?group.context_overrides:state.config.context,group?gs.context_overrides.items:state.schema.context.items,['context'],!!group);
-      if(!group){const diag=section('运行记录与排查','排查问题时，可临时记录请求中的文字。记录可能包含聊天正文；已知密钥和媒体文件编码会隐藏，过长文字会标明缩减。');appendFields(diag,state.config.diagnostics,state.schema.diagnostics.items,['diagnostics']);root.append(diag);const resources=section('运行资源与超时','限制所有会话合计能同时执行多少任务，以及一轮任务最多等多久。不确定时保留默认值；提高任务上限不能解决输入资料过长的问题。');appendFields(resources,state.config.runtime,state.schema.runtime.items,['runtime']);root.append(resources);}
+      if(!group){const diag=section('运行记录与排查','默认就能查看执行阶段、耗时和发送结果；需要检查请求或响应文字时，再开启文字快照。快照可能包含聊天正文，已知密钥和媒体编码会隐藏，过长文字会标明缩减。');appendFields(diag,state.config.diagnostics,state.schema.diagnostics.items,['diagnostics']);root.append(diag);const resources=section('运行资源与超时','设置所有会话合计的并发额度。主动聊天额外总时限默认留空，模型和工具沿用主框架自身的限制；填写正整数才增加插件整轮时限，不影响智能插话的判断请求超时。');appendFields(resources,state.config.runtime,state.schema.runtime.items,['runtime']);root.append(resources);}
     }
   }
   function renderScore(root) {
@@ -342,8 +344,8 @@
     try{const bar=el('div',undefined,'timebar');for(let m=0;m<1440;m+=15){const kind=inside(cfg.sleep_hours,m)?'sleep':inside(cfg.active_hours,m)?'active':'normal',block=el('span',undefined,kind);block.title=String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0')+' · '+({sleep:'睡眠',active:'活跃',normal:'正常'}[kind]);bar.append(block);}box.append(bar);const hours=el('div',undefined,'hours');['00:00','06:00','12:00','18:00','24:00'].forEach(t=>hours.append(el('span',t)));box.append(hours,el('p','蓝灰：睡眠；青绿：活跃；浅灰：正常。时区：'+(cfg.timezone||'跟随框架')+'。活跃间隔约 '+Math.round(cfg.min_interval_minutes*cfg.active_interval_multiplier*10)/10+'～'+Math.round(cfg.max_interval_minutes*cfg.active_interval_multiplier*10)/10+' 分钟。','muted'));}catch{box.append(el('p','请先修正时间格式，再查看预览。','warning'));}
   }
   function renderTraces(root) {
-    const intro=section('查看为什么开口或没有开口','先在左侧选择一次运行，再点步骤查看详情。可以检查是否还在等待、分数是否过低、模型是否出错；需要查看请求正文时，先在“上下文与诊断”中开启临时文字快照。');intro.id='trace-intro';const actions=el('div',undefined,'actions'),refresh=el('button','刷新记录'),clear=el('button','清空临时记录','danger');refresh.onclick=()=>refreshStatus().catch(fail);
-    clear.onclick=async()=>{if(!await dialog({title:'清空临时记录？',message:'只清空本插件内存中的诊断，不删除原生聊天历史。',confirm:'清空',danger:true}))return;try{await api('clear',{});state.run=null;state.traceSeq++;await refreshStatus();notice('临时记录已清空。');}catch(e){fail(e);}};
+    const intro=section('查看为什么开口或没有开口','选择一次运行，点击“刷新记录”更新当前阶段和耗时，再查看步骤及最终结果。阶段记录默认可见，不需要开启文字快照；单次模型尝试未成功不代表整轮失败。只有需要检查请求或响应文字时，才在“上下文与诊断”中开启文字快照。');intro.id='trace-intro';const actions=el('div',undefined,'actions'),refresh=el('button','刷新记录'),clear=el('button','清空临时记录','danger');refresh.onclick=()=>refreshStatus().catch(fail);
+    clear.onclick=async()=>{if(!await dialog({title:'清空临时记录？',message:'清空已采集的步骤历史，不删除原生聊天历史，也不停止正在执行的任务；进行中的主动任务仍可查看当前阶段。',confirm:'清空',danger:true}))return;try{await api('clear',{});state.run=null;state.traceSeq++;await refreshStatus();notice('步骤历史已清空；进行中的主动任务仍可查看当前状态。');}catch(e){fail(e);}};
     actions.append(refresh,clear,el('span',state.status?.capture_raw?'文字快照：开启':'文字快照：关闭','tag'));intro.append(actions);root.append(intro);
     const grid=el('div',undefined,'trace-grid'),list=el('section',undefined,'trace-list'),search=el('input');search.type='search';search.placeholder='搜索会话或结果';search.setAttribute('aria-label','搜索运行记录');const results=el('div');list.append(search,results);
     const steps=el('div',undefined,'trace-steps');steps.id='trace-steps';const detail=el('section',undefined,'trace-detail');detail.id='trace-detail';grid.append(list,steps,detail);root.append(grid);
@@ -354,17 +356,30 @@
   function drawTrace() {
     const steps=$('trace-steps'),detail=$('trace-detail');if(!steps||!detail)return;steps.replaceChildren();detail.replaceChildren();
     if(!state.run){detail.append(el('p','选择左侧的一次运行，即可查看它的经过。','empty'));return;}
+    const progress=state.run.progress;
+    if(progress){steps.append(el('strong','当前：'+progress.phase_label),el('p','本阶段已等待 '+progress.phase_seconds+' 秒 · '+(progress.timeout_seconds==null?'跟随主框架，无插件整轮截止时间':'插件整轮上限 '+progress.timeout_seconds+' 秒'),'muted'));}
+    if(state.run.history_omitted)steps.append(el('small','先前步骤已清空或被容量／时限淘汰；当前执行状态仍可查看。','muted'));
+    if(state.run.steps_omitted)steps.append(el('small','本轮步骤较多，已省略 '+state.run.steps_omitted+' 个过程记录；保留结束摘要。','muted'));
     state.run.steps.forEach((step,index)=>{const b=el('button',String(index+1).padStart(2,'0')+'  '+step.label,'step'+(state.step===index?' active':''));b.onclick=()=>{state.step=index;drawTrace();};steps.append(b);});
     if(!state.run.steps[state.step]){detail.append(el('p','本轮没有保留步骤。'));return;}
     const runId=state.run.run_id,index=state.step,seq=++state.traceSeq;detail.append(el('p','正在读取这一步…','muted'));
     api('trace',undefined,{run_id:runId,step:index}).then(step=>{
       if(seq!==state.traceSeq||state.tab!=='traces')return;detail.replaceChildren(el('h3',step.label),el('small',new Date(step.at*1000).toLocaleString()+' · '+step.state));
       if(step.data?.score?.final!==undefined){const score=step.data.score;detail.append(el('p','最终分 '+displayScore(Number(score.final),Number(step.data.threshold))+(step.data.triggered?' > ':' ≤ ')+'阈值 '+step.data.threshold,'score-outcome'));}
+      if(step.data?.phase_label){const d=step.data;detail.append(el('p','阶段：'+d.phase_label+' · 本阶段 '+d.phase_seconds+' 秒 · 执行 '+d.execution_seconds+' 秒 · '+(d.timeout_seconds==null?'跟随主框架，无插件整轮截止时间':'插件整轮上限 '+d.timeout_seconds+' 秒')));detail.append(el('p','模型调用 '+d.provider_calls+' 次 · 工具调用 '+d.tool_calls+' 次 · '+(d.sent?'已确认发送':'尚未确认发送')));if(d.outcome)detail.append(el('p',d.outcome));}
       if(step.data!==undefined){const copy=el('button','复制这一步');copy.onclick=()=>copyText(JSON.stringify(step.data,null,2),notice);detail.append(copy,el('pre',JSON.stringify(step.data,null,2)));}
       else detail.append(el('p','本步没有保留正文。若未开启文字快照，可在“上下文与诊断”中开启后等待下一次运行。','muted'));
     }).catch(error=>{if(seq===state.traceSeq){detail.replaceChildren(el('p',error.message,'warning'));}});
   }
-  async function refreshStatus(redraw=true) { state.status=await api('status');if(redraw&&['overview','traces'].includes(state.tab))render(); }
+  async function refreshStatus(redraw=true) {
+    const runId=state.run?.run_id,seq=state.traceSeq;
+    state.status=await api('status');
+    if(redraw&&state.tab==='traces'&&runId&&seq===state.traceSeq){
+      try{const run=await api('trace',undefined,{run_id:runId});if(state.run?.run_id===runId&&seq===state.traceSeq){state.run=run;state.step=Math.min(state.step,Math.max(0,run.steps.length-1));}}
+      catch(error){if(state.run?.run_id===runId&&seq===state.traceSeq){state.run=null;notice(error.message,true);}}
+    }
+    if(redraw&&['overview','traces'].includes(state.tab))render();
+  }
   async function reload(initial=false) {
     if(state.busy)return;
     if(state.dirty&&!await dialog({title:'放弃未保存的修改？',message:'重新载入已保存的配置，当前草稿会被替换。',confirm:'放弃并载入',danger:true}))return;
@@ -381,13 +396,13 @@
   $('reload').onclick=()=>reload().catch(fail);
   $('save').onclick=async()=>{
     if(!state.config||state.busy||!state.dirty)return;
-    let message='保存会取消等待中的判断，重新安排下次主动聊天时间，并清空临时运行记录；已经成功发言的次数会保留。';
+    let message='设置写入原生配置，日程写入独立数据文件。保存会取消等待中的判断，重新安排下次主动聊天时间，并清空此前采集的步骤；已经成功发言的次数会保留。';
     if(state.config.interjection.decision.jev_endpoint!==state.saved.interjection.decision.jev_endpoint)message+=' Jev 接口地址发生变化；请求会向该地址发送凭据与判断材料，请确认可信。';
     if(state.config.diagnostics.capture_raw&&!state.saved.diagnostics.capture_raw)message+=' 将开启临时文字快照，登录管理界面的用户可查看。';
     if(!await dialog({title:'保存并生效？',message,confirm:'保存并生效'}))return;
     busy(true);state.previewSeq++;clearTimeout(previewTimer);let saved=false;
     try {
-      const result=await api('settings',{config:clone(state.config),revision:state.revision});state.config=result.config;state.revision=result.revision;state.saved=clone(result.config);state.dirty=false;state.effective=null;saved=true;render();notice('配置已保存并生效。发送计数保留，下一次主动时间将重新安排。');
+      const result=await api('settings',{config:clone(state.config),revision:state.revision});state.config=result.config;state.revision=result.revision;state.saved=clone(result.config);state.dirty=false;state.effective=null;saved=true;render();notice('设置与日程已分别保存并生效。发送计数保留，下一次主动时间将重新安排。');
       await refreshStatus();
     } catch(error){if(saved)notice('保存已成功，但运行状态刷新失败：'+error.message,true);else{fail(error);if(error.details?.errors)notice(error.message+'\n'+JSON.stringify(error.details.errors,null,2),true);}}
     finally {busy(false);previewSoon();}
@@ -403,9 +418,9 @@
       ['interjection','feature-settings','判断和说话是两步','“判断提示词”指导模型打分；“智能插话发言提示词列表”指导机器人如何接话。顶部可切换会话组，单独填写判断提示词和补充模板；留空跟随全局，醒目的徽标标出本组覆盖。'],
       ['interjection','placeholder-panel','不用背占位符','点击提示词输入框，底部临时助手只显示这个输入框可用的占位符。点击插入光标位置，有选中文字则替换；Esc 收起。这里的大全可以查说明与示例。'],
       ['schedule','agenda-settings','先从一条午休开始','开启日程意识，添加午休，选起止时间和重复方式；每周可以勾选多天。按需要暂停插件插话或主动聊天；都不勾选时只让机器人知道。不创建或拦截原生未来任务。'],
-      ['schedule','agenda-calendar','日历是结果，不是另一份配置','日历预览按当前草稿计算，点击某天看详情。会话组共享全局日程，也可新增或排除。日程关闭仍可预览；草稿只有保存后才用于运行。'],
+      ['schedule','agenda-calendar','日历展示草稿，保存后才生效','日历预览按当前日程草稿计算，点击某天看详情。会话组共享全局日程，也可新增或排除。保存时，日程写入独立数据文件，开关和会话组设置写入原生配置。'],
       ['context','context-settings','判断材料不必越多越好','复用已有文字与图片转述，按预算去掉较旧材料。这里不会删改原生历史，真正发言仍由 AstrBot 原来的聊天助手完成。'],
-      ['traces','trace-intro','看懂为什么没有开口','选一轮运行，再逐步查看。关闭、冷却、排队过期、模型故障和未过阈值是不同原因。编辑完成后，再使用右上角“保存并生效”。']
+      ['traces','trace-intro','看懂为什么没有开口','选一轮运行，点击“刷新记录”更新阶段和耗时。等待模型、一次尝试未成功、整轮最终失败和因睡眠放弃发送是不同情况；查看这些信息不需要开启文字快照。']
     ];
     try{
       for(let i=0;i<steps.length;i++){

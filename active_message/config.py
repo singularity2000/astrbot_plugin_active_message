@@ -29,6 +29,19 @@ def _int(value: Any, default: int, minimum: int = 0) -> int:
     return max(minimum, result)
 
 
+def _optional_timeout(value: Any) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        number = float(value)
+        if not isinstance(value, bool) and math.isfinite(number) and number.is_integer() and number >= 1:
+            return int(number)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    # Validation reports this invalid setting; never turn it into unlimited time.
+    return 0
+
+
 def _float(value: Any, default: float) -> float:
     try:
         result = float(value)
@@ -115,7 +128,7 @@ class PluginConfig:
     missing_group_history: str = "skip"
     judgment_concurrency: int = 2
     proactive_concurrency: int = 2
-    proactive_timeout_seconds: int = 180
+    proactive_timeout_seconds: int | None = None
     debounce_max_seconds: float = 10
     decision_max_age_seconds: float = 45
     proactive_task_prompt: str = "这是机器人自主发起的聊天机会，不是某个用户提出的任务。结合当前会话的历史和人格决定是否自然开口。不要输出任务执行报告。"
@@ -240,7 +253,7 @@ class PluginConfig:
             missing_group_history=_text(_as_dict(root.get("context")).get("missing_group_history"), "skip"),
             judgment_concurrency=_int(_as_dict(root.get("runtime")).get("judgment_concurrency"), 2, 1),
             proactive_concurrency=_int(_as_dict(root.get("runtime")).get("proactive_concurrency"), 2, 1),
-            proactive_timeout_seconds=_int(_as_dict(root.get("runtime")).get("proactive_timeout_seconds"), 180, 1),
+            proactive_timeout_seconds=_optional_timeout(_as_dict(root.get("runtime")).get("proactive_timeout_seconds")),
             proactive_task_prompt=_text(proactive.get("task_prompt"), cls.__dataclass_fields__["proactive_task_prompt"].default),
         )
 

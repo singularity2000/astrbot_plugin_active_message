@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import time
+from .agenda import config_only
 from .settings import Settings, shape_errors, schema
 from .prompts import placeholder_catalog
 
@@ -39,7 +40,10 @@ class PageAPI:
         registry[:] = [api for api in registry if api[1] not in self.handlers]
 
     def revision(self):
-        return hashlib.sha256(json.dumps(dict(self.plugin.config_raw), sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+        store = self.plugin.agenda_store
+        return hashlib.sha256(json.dumps({"config": config_only(self.plugin.config_raw),
+            "agenda_revision": store.revision, "events": store.events},
+            sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
     def _auth(self):
         from astrbot.api.web import request
@@ -69,6 +73,8 @@ class PageAPI:
         raw = data.get("config")
         if not isinstance(raw, dict): raise ValueError("缺少配置对象。")
         raw = copy.deepcopy(raw)
+        if not isinstance(raw.get("agenda"), dict) or "events" not in raw["agenda"]:
+            raise ValueError("日程草稿不完整，请重新载入；不会用空列表替换已有日程。")
         problems = shape_errors(raw, schema())
         if problems:
             raise ValueError("；".join(path + "：" + hint for path, hint in problems))
@@ -77,20 +83,28 @@ class PageAPI:
             decision["jev_api_key"] = self.plugin.settings.config.decision.jev_api_key
         if not isinstance(raw.get("session_groups", []), list):
             raise ValueError("会话组必须为列表。")
-        return Settings(raw)
+        candidate = Settings(raw)
+        candidate.agenda_revision = self.plugin.agenda_store.revision
+        candidate.config_revision = self.plugin.agenda_store.config_revision(self.plugin.config_raw)
+        return candidate
 
     async def bootstrap(self):
         try:
             request = self._auth()
+            async with self.plugin._settings_lock:
+                await self.plugin.agenda_store.check_current()
+                config = public_config(self.plugin.settings.raw)
+                metadata = copy.deepcopy(self.plugin.settings.schema)
+                revision = self.revision()
             providers = []
             for provider in self.plugin.context.get_all_providers():
                 meta = provider.meta()
                 providers.append({"id":str(meta.id), "name":str(getattr(meta, "model", "") or meta.id)})
-            return self._response({"config":public_config(self.plugin.settings.raw), "schema":self.plugin.settings.schema,
-                                   "revision":self.revision(), "providers":providers, "errors":self.plugin.settings.blocking_errors(),
+            return self._response({"config":config, "schema":metadata,
+                                   "revision":revision, "providers":providers, "errors":self.plugin.settings.blocking_errors(),
                                    "warnings":self.plugin.settings.warnings, "placeholders":placeholder_catalog(),
                                    "preferences":await self._read_preferences(request.username)})
-        except PermissionError as exc: return self._response(error=str(exc))
+        except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
         except Exception:
             self.plugin.observer.log("warning", "PAGE_READ_FAILED", explanation="无法读取配置或 Provider 列表。")
             return self._response(error="读取配置失败，请查看插件日志。")
@@ -119,6 +133,8 @@ class PageAPI:
             errors = p.settings.blocking_errors()
             if not p._state_valid:
                 errors["运行状态"] = {"shared":[["runtime_state.json", "恢复失败；请先备份、检查状态文件并重载。插件已暂停。"]]}
+            if not p.agenda_store.ready:
+                errors["日程存储"] = {"agenda":[["agenda.json", "日程存储未就绪或事务未完成；请检查日志后重载，勿回写旧文件。"]]}
             return self._response({"enabled":p._available(), "global_enabled":p.plugin_config.enabled, "sessions":sessions,
                 "warnings":p.settings.warnings,
                 "unresolved":p.scopes.unresolved(), "runs":p.traces.list(), "capture_raw":p.traces.capture_raw,
@@ -170,6 +186,7 @@ class PageAPI:
         try:
             data = await self._body()
             async with self.plugin._settings_lock:
+                await self.plugin.agenda_store.check_current()
                 if data.get("revision") != self.revision():
                     raise ValueError("配置已在另一处变更，请重新载入后再保存，避免覆盖他人的修改。")
                 candidate = self._candidate(data)
@@ -180,7 +197,7 @@ class PageAPI:
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
         except Exception as exc:
             self.plugin.observer.error("CONFIG_SAVE_FAILED", exc)
-            return self._response(error="配置保存失败，未切换运行配置；请查看日志并重新载入。")
+            return self._response(error="保存未完成，日程可能已安全落盘；请查看日志并重载恢复，不要用旧草稿覆盖。")
 
     async def clear(self):
         try:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.2.1"
+PLUGIN_VERSION = "1.2.2"
 
 import asyncio
 import json
@@ -18,27 +18,25 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.platform.message_type import MessageType
 
-from .active_message.alarm import DeadlineAlarm
-from .active_message.agenda import (
-    context_text, persist_agenda_links, publish_agenda_schema,
-)
+from .active_message.agenda import context_text, publish_agenda_schema, AgendaStore, AgendaStoreError
 from .active_message.context_input import ContextUnavailable, read_context
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
-from .active_message.diagnostics import TraceStore
+from .active_message.diagnostics import Observability, TraceStore
+from .active_message.proactive import NativeAgentError, RunProgress, run_proactive_agent
 from .active_message.decisions import DecisionClient, DecisionError
 from .active_message.models import DecisionResult, MessageObservation
 from .active_message.native import (
     current_conversation, platform_for_sid, resolve_persona,
     session_allows_plugin, tool_response_text,
 )
-from .active_message.observability import Observability
-from .active_message.proactive import run_proactive_agent
-from .active_message.proactive_schedule import PROACTIVE_SCHEDULE_VERSION, choose_proactive_run_at
 from .active_message.prompts import make_values, render_system_template
 from .active_message.runtime import RuntimeStore
 from .active_message.storage import JsonStateFile
-from .active_message.schedule import current_mood, get_timezone
+from .active_message.schedule import (
+    DeadlineAlarm, PROACTIVE_SCHEDULE_VERSION, choose_proactive_run_at,
+    current_mood, get_timezone,
+)
 from .active_message.scoring import build_score_breakdown, calculate_activity_score, calculate_energy_score, exceeds_threshold
 
 PLUGIN_ID = "astrbot_plugin_active_message"
@@ -57,6 +55,7 @@ class ActiveMessagePlugin(Star):
         self.plugin_config = self.settings.config
         self.runtime = RuntimeStore()
         self.state_file = JsonStateFile(StarTools.get_data_dir(PLUGIN_ID) / "runtime_state.json")
+        self.agenda_store = AgendaStore(StarTools.get_data_dir(PLUGIN_ID) / "agenda.json")
         self.scopes = self.settings.scopes
         self._scope_error = bool(self.settings.scope_error)
         self.traces = TraceStore(self.settings.raw.get("diagnostics"), (self.plugin_config.decision.jev_api_key,))
@@ -72,6 +71,7 @@ class ActiveMessagePlugin(Star):
         self._alarm = DeadlineAlarm(self._tick, self._next_delay,
                                     lambda exc: self.observer.error("SCHEDULER_FAILED", exc))
         self._proactive_tasks: dict[str, asyncio.Task] = {}
+        self._unfinished_tools: set[asyncio.Task] = set()
         self._agent_events: dict[str, set[int]] = {}
         self._agent_tasks: dict[int, tuple[asyncio.Task, Any]] = {}
         self._closed = False
@@ -154,25 +154,40 @@ class ActiveMessagePlugin(Star):
         run_id = record.get("run_id")
         if run_id:
             try:
-                self.traces.add(run_id, record.get("message", record["code"]), record)
+                label = record.get("message", record["code"])
+                if record["code"] == "PROACTIVE_PROGRESS":
+                    label = "主动聊天 · " + record.get("phase_label", "执行中")
+                    if record.get("tool"):
+                        label += " · " + record["tool"]
+                self.traces.add(run_id, label, record,
+                                terminal=record["code"] in {"PROACTIVE_TIMEOUT", "PROACTIVE_RUN_FAILED", "PROACTIVE_COMPLETED"})
             except Exception:
                 return
             if record["code"] == "MESSAGE_SENT":
-                self.traces.finish(run_id, "已发送")
+                if not record.get("proactive"):
+                    self.traces.finish(run_id, "已发送")
 
     async def initialize(self) -> None:
         """Validate effective settings once; a bad group does not disable other groups."""
-        links_ready = not self.settings.shape_errors
+        links_ready = False
+        try:
+            async with self._settings_lock:
+                view = await self.agenda_store.initialize(self.config_raw)
+                self.settings = Settings(view)
+                self.plugin_config = self.settings.config
+                self.scopes = self.settings.scopes
+                self._scope_error = bool(self.settings.scope_error)
+                self._model_slots = asyncio.Semaphore(self.plugin_config.judgment_concurrency)
+                self._proactive_slots = asyncio.Semaphore(self.plugin_config.proactive_concurrency)
+                self.traces = TraceStore(self.settings.raw.get("diagnostics"), (self.plugin_config.decision.jev_api_key,))
+                links_ready = True
+        except Exception as exc:
+            self.observer.error("AGENDA_RESTORE_FAILED", exc,
+                                explanation=str(exc) if isinstance(exc, AgendaStoreError) else "请检查日程文件和配置写入权限。")
+            for entry in [self.settings.global_entry, *self.settings.groups]:
+                entry.errors["agenda"].append(("agenda", "日程数据加载或保存恢复未完成；已保护原数据。请检查 agenda.json 和配置写入权限后重载。"))
         if links_ready:
-            try:
-                if self.settings.agenda_links_changed:
-                    await persist_agenda_links(self.config_raw, self.settings.raw)
-            except Exception as exc:
-                links_ready = False
-                self.observer.error("AGENDA_LINKS_SAVE_FAILED", exc)
-                for entry in [self.settings.global_entry, *self.settings.groups]:
-                    entry.errors["agenda"].append(("agenda", "日程关联信息未能保存，请检查写入权限后重载，或在 Pages 重新保存配置。"))
-        publish_agenda_schema(self.config_raw, self.settings.schema)
+            publish_agenda_schema(self.config_raw, self.settings.schema)
         self._config_errors = self.settings.blocking_errors()
         self._valid = links_ready and not self._scope_error and not self.settings.shape_errors
         self._interjection_valid = self.settings.global_entry.valid("interjection")
@@ -563,6 +578,8 @@ class ActiveMessagePlugin(Star):
         count_turn = proactive and not event.get_extra("_active_message_sent", False)
         if self.runtime.sent(sid, key, self._now(sid).date().isoformat(), cfg, proactive=count_turn):
             event.set_extra("_active_message_sent", True)
+            if meta.get("progress"):
+                meta["progress"].sent = True
             self.observer.log("info", "MESSAGE_SENT", sid=sid, run_id=meta.get("run_id"), proactive=proactive,
                               daily_proactive_sent=self.runtime.get(sid).daily_proactive_sent)
             await self._persist_state()
@@ -613,7 +630,7 @@ class ActiveMessagePlugin(Star):
         return values
 
     def _available(self) -> bool:
-        return self._ready and self._valid and self.plugin_config.enabled and self.settings.any_enabled() and not self._closed and not self._updating
+        return self._ready and self._valid and self.agenda_store.ready and self.plugin_config.enabled and self.settings.any_enabled() and not self._closed and not self._updating
 
     def _eligible(self, event: AstrMessageEvent) -> bool:
         return not (event.is_at_or_wake_command or event.is_stopped() or event.get_extra("handlers_parsed_params", {})
@@ -640,6 +657,8 @@ class ActiveMessagePlugin(Star):
             self._alarm.wake()
 
     def _next_delay(self) -> float | None:
+        if not self._available():
+            return None
         deadlines = []
         now = self._now()
         for sid in self.scopes.targets(self.runtime.sessions):
@@ -744,27 +763,60 @@ class ActiveMessagePlugin(Star):
 
     async def _run_proactive(self, sid: str, meta: dict[str, Any]) -> None:
         cfg = self._config_for(sid)
+        progress = RunProgress(self.observer, sid, meta["run_id"], cfg.proactive_timeout_seconds)
+        meta["progress"] = progress
+        self.traces.watch(meta["run_id"], sid, "主动聊天", progress.snapshot)
+        deadline = None
         try:
+            progress.enter("queue")
             async with self._proactive_slots:
                 if self._available():
-                    async with asyncio.timeout(cfg.proactive_timeout_seconds):
+                    if cfg.proactive_timeout_seconds is None:
                         await run_proactive_agent(self, sid, meta)
+                    else:
+                        progress.deadline_at = time.monotonic() + cfg.proactive_timeout_seconds
+                        async with asyncio.timeout(cfg.proactive_timeout_seconds) as deadline:
+                            await run_proactive_agent(self, sid, meta)
+                            progress.check_deadline()
+                else:
+                    progress.outcome = "跳过：插件已停止或正在更新"
         except asyncio.CancelledError:
+            progress.outcome = "已发送，后续执行被取消" if progress.sent else "任务已取消"
             raise
         except ContextUnavailable as exc:
+            progress.outcome = "上下文不可用：" + str(exc)
             self._warn_once(str(exc), sid)
+            self.observer.error("PROACTIVE_RUN_FAILED", exc, sid=sid, run_id=meta["run_id"], **progress.snapshot())
         except Exception as exc:
-            self.observer.error("PROACTIVE_RUN_FAILED", exc, sid=sid, run_id=meta["run_id"])
+            timed_out = ((deadline is not None and deadline.expired()) or
+                         (isinstance(exc, (TimeoutError, NativeAgentError)) and progress.deadline_at is not None
+                          and time.monotonic() >= progress.deadline_at))
+            native_failed = isinstance(exc, NativeAgentError) and not timed_out
+            if native_failed:
+                progress.outcome = "已发送，后续原生 Agent 最终失败" if progress.sent else "原生 Agent 最终失败"
+            else:
+                suffix = "超时" if timed_out else "失败"
+                phase = progress.snapshot()["phase_label"]
+                progress.outcome = ("已发送，后续" if progress.sent else "任务") + suffix + "：" + phase
+            code = "PROACTIVE_TIMEOUT" if timed_out else "PROACTIVE_NATIVE_ERROR" if native_failed else "PROACTIVE_RUN_FAILED"
+            self.observer.error(code, exc,
+                                sid=sid, run_id=meta["run_id"], **progress.snapshot())
         finally:
-            run = self.traces.get(meta["run_id"])
-            if run and run["status"] == "进行中":
-                self.traces.finish(meta["run_id"], "任务结束，未确认发送")
+            outcome = progress.outcome or ("已发送，未确认任务完成" if progress.sent else "任务结束，未确认发送")
+            if any(not task.done() for task in progress.active_tools):
+                outcome += "；工具未退出，插件已暂停"
+            self.observer.log("info", "PROACTIVE_COMPLETED", sid=sid, run_id=meta["run_id"],
+                              outcome=outcome, **progress.snapshot())
+            self.traces.finish(meta["run_id"], outcome)
             self._proactive_tasks.pop(sid, None)
             self._agent_events.pop(sid, None)
             self.runtime.get(sid).agent_active = False
             if not self._closed:
-                self._schedule_next(sid)
-                self._alarm.wake()
+                if self._available():
+                    self._schedule_next(sid)
+                    self._alarm.wake()
+                else:
+                    self.runtime.get(sid).proactive_next_run = None
                 await self._persist_state()
 
     async def apply_settings(self, candidate: Settings) -> None:
@@ -778,15 +830,17 @@ class ActiveMessagePlugin(Star):
 
     async def _apply_settings_transaction(self, candidate: Settings) -> None:
         """Apply only while idle, preserving counters and the native config file owner."""
-        import copy
         if not self._state_valid:
             raise ValueError("运行状态恢复失败；请先备份、检查 runtime_state.json 并重载，避免重新计数后重复主动发言。")
+        if not self.agenda_store.ready:
+            raise ValueError("日程数据尚未就绪，请检查日志并重载后再保存。")
+        if any(not task.done() for task in self._unfinished_tools):
+            raise ValueError("上一轮工具未响应取消；插件已暂停，请先处理工具或重启 AstrBot，避免重复执行。")
         if any(state.agent_active for state in self.runtime.sessions.values()):
             raise ValueError("有会话正在运行 Agent，请等待结束后再保存。")
         if not callable(getattr(self.config_raw, "save_config_async", None)) and not callable(getattr(self.config_raw, "save_config", None)):
             raise ValueError("当前框架没有可用的原生配置保存接口；请在插件配置页保存并重载。")
         self._updating = True
-        old_raw = copy.deepcopy(dict(self.config_raw))
         try:
             await self._alarm.close()
             await self.runtime.cancel_pending()
@@ -795,18 +849,16 @@ class ActiveMessagePlugin(Star):
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-            self.config_raw.clear()
-            self.config_raw.update(copy.deepcopy(candidate.raw))
             try:
-                save_async = getattr(self.config_raw, "save_config_async", None)
-                if callable(save_async):
-                    committed = await save_async()
-                    if committed is False:
-                        raise ValueError("配置被另一处更新，请刷新后重试。")
-                else:
-                    await asyncio.to_thread(self.config_raw.save_config)
-            except BaseException:
-                self.config_raw.clear(); self.config_raw.update(old_raw)
+                await self.agenda_store.save(self.config_raw, candidate.raw,
+                                             expected_revision=candidate.agenda_revision,
+                                             expected_config_revision=candidate.config_revision)
+            except BaseException as exc:
+                # Data may already be durably committed. Preserve the recovery
+                # transaction; never overwrite it with a stale in-memory copy.
+                self._valid = False
+                self.observer.error("AGENDA_SAVE_FAILED", exc,
+                                    explanation=str(exc) if isinstance(exc, AgendaStoreError) else "保存中断；请重载恢复。")
                 raise
             candidate.scopes.inherit_observations(self.scopes)
             self.settings = candidate

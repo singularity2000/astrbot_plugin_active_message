@@ -1,8 +1,9 @@
-"""Schedule rules, calendar and native configuration; never sends messages."""
+"""Schedule rules, calendar, Pages schema and durable agenda transactions."""
 from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import re
 import uuid
@@ -10,12 +11,115 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Iterator
 
 from .schedule import get_timezone
+from .storage import JsonStateFile
 
 WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 REPEATS = {"不重复", "每天", "每周", "每年", "Cron"}
+
+
+# Pages-only event fields. Never publish these as persistent config fields.
+_EVENT_SCHEMA = {'type': 'template_list',
+ 'description': '日程',
+ 'default': [],
+ 'hint': '日程记录独立保存在插件数据目录的 agenda.json。全局和本组安排均在 Pages 编辑；每个范围最多 100 条，总计最多 1000 条。',
+ 'templates': {'event': {'name': '日程',
+                         'display_item': 'title',
+                         'items': {'id': {'type': 'string',
+                                          'description': '日程标识',
+                                          'default': '',
+                                          'invisible': True,
+                                          'hint': '由插件自动生成并维护的内部编号，不需要查看或填写；修改日程名称不会改变它。'},
+                                   'enabled': {'type': 'bool',
+                                               'description': '启用这条日程',
+                                               'default': True},
+                                   'title': {'type': 'string',
+                                             'description': '日程名称',
+                                             'default': '',
+                                             'hint': '例如：午休、阅读、群活动；最多 80 字。'},
+                                   'description': {'type': 'text',
+                                                   'description': '日程说明',
+                                                   'default': '',
+                                                   'hint': '写清楚谁在什么时间做什么，例如机器人午休、群友聚餐。供机器人回复时参考，不会自动提醒，也不代表事情已经做完。最多 '
+                                                           '1000 字，可以不填。'},
+                                   'start_date': {'type': 'string',
+                                                  'description': '开始日期',
+                                                  'default': '',
+                                                  'hint': 'YYYY-MM-DD，例如 2026-10-10。重复日程从这一天开始生效。'},
+                                   'until': {'type': 'string',
+                                             'description': '重复截止日期',
+                                             'default': '',
+                                             'hint': '仅重复日程使用。留空表示不设截止日期；填写如 '
+                                                     '2026-12-31，表示当天仍可开始一次日程。跨午夜的日程可以在次日结束。'},
+                                   'time_mode': {'type': 'string',
+                                                 'description': '时间范围',
+                                                 'default': '全天',
+                                                 'hint': '全天：整天有效；时段：只在指定的起止时间内有效。结束早于开始表示次日结束；起止相同请改选全天。Cron '
+                                                         '不看这里，按表达式和持续时间计算。',
+                                                 'options': ['全天', '时段']},
+                                   'start_time': {'type': 'string',
+                                                  'description': '开始时间',
+                                                  'default': '09:00',
+                                                  'hint': '填写 24 小时时间，如 09:00。仅普通“时段”日程使用；全天和 Cron '
+                                                          '不使用此项。'},
+                                   'end_time': {'type': 'string',
+                                                'description': '结束时间',
+                                                'default': '10:00',
+                                                'hint': '填写 24 小时时间，如 18:00。早于开始时间表示次日结束；全天和 Cron '
+                                                        '不使用此项。'},
+                                   'repeat': {'type': 'string',
+                                              'description': '重复方式',
+                                              'default': '不重复',
+                                              'hint': '不重复：只在开始日期生效一次；每天、每周、每年：按相应周期重复；Cron：用表达式自定义时间。每周可选多天，不会自动识别法定节假日或调休。',
+                                              'options': ['不重复', '每天', '每周', '每年', 'Cron']},
+                                   'weekdays': {'type': 'list',
+                                                'description': '每周哪些天',
+                                                'default': [],
+                                                'hint': '每项填写周一、周二、周三、周四、周五、周六或周日。仅每周重复使用，可多选。',
+                                                'options': ['周一',
+                                                            '周二',
+                                                            '周三',
+                                                            '周四',
+                                                            '周五',
+                                                            '周六',
+                                                            '周日'],
+                                                'render_type': 'checkbox'},
+                                   'cron': {'type': 'string',
+                                            'description': 'Cron 表达式（自定义重复时间）',
+                                            'default': '0 9 * * *',
+                                            'hint': '仅选择 Cron 时使用，不熟悉可选每天或每周。按“分 时 日 月 周”填写，例如 0 9 '
+                                                    '* * * 表示每天 09:00；周日为 0 或 7，也支持 '
+                                                    'mon-fri。日期与星期都有限制时须同时满足。只安排日程，不创建定时提醒。'},
+                                   'cron_duration_minutes': {'type': 'int',
+                                                             'description': 'Cron 每次持续时间（分钟）',
+                                                             'default': 60,
+                                                             'hint': '仅 Cron 使用，填写 1～1440。例如每天 '
+                                                                     '09:00 开始、持续 60 分钟，表示当天 '
+                                                                     '09:00～10:00 有效。'},
+                                   'pause_interjection': {'type': 'bool',
+                                                          'description': '期间暂停智能插话',
+                                                          'default': False,
+                                                          'hint': '这条日程进行期间，停止插件自行插话；正常 @ '
+                                                                  '回复、命令和原生未来任务不受影响。需要同时开启日程意识。'},
+                                   'pause_proactive': {'type': 'bool',
+                                                       'description': '期间暂停主动聊天',
+                                                       'default': False,
+                                                       'hint': '这条日程进行期间，停止插件自行发起聊天；正常 @ '
+                                                               '回复、命令和原生未来任务不受影响。需要同时开启日程意识。'},
+                                   'group_id': {'type': 'string',
+                                                'description': '日程适用范围',
+                                                'default': '',
+                                                'options': [''],
+                                                'labels': ['全局：适用会话（可在组内排除）'],
+                                                'hint': '选择全局或一个会话组。原来的组不存在时，请重新选择适用范围，不会自动变成全局日程。'}}}}}
+
+
+def event_schema() -> dict:
+    """Return an isolated schema for the runtime agenda viewmodel."""
+    return copy.deepcopy(_EVENT_SCHEMA)
 
 
 def parse_date(value: str) -> date:
@@ -347,7 +451,7 @@ def populate_agenda_choices(metadata: dict, raw: dict) -> None:
     events = agenda.get("events", []) if isinstance(agenda, dict) else []
     events = [row for row in events if isinstance(row, dict)] if isinstance(events, list) else []
     group_fields = metadata["session_groups"]["templates"]["group"]["items"]
-    event_fields = metadata["agenda"]["items"]["events"]["templates"]["event"]["items"]
+    event_fields = metadata["agenda"]["items"].get("events", {}).get("templates", {}).get("event", {}).get("items", {})
     values, labels = [""], ["全局：适用会话（可在组内排除）"]
     for index, group in enumerate(groups):
         ident = group.get("agenda_id")
@@ -359,7 +463,8 @@ def populate_agenda_choices(metadata: dict, raw: dict) -> None:
         if isinstance(ident, str) and ident and ident not in values:
             values.append(ident)
             labels.append("未关联会话组（请重新选择适用范围） · " + str(len(values) - 1))
-    event_fields["group_id"].update(options=values, labels=labels)
+    if "group_id" in event_fields:
+        event_fields["group_id"].update(options=values, labels=labels)
     global_events = [row for row in events if not row.get("group_id") and isinstance(row.get("id"), str) and row["id"]]
     names = [_schedule_label(row) for row in global_events]
     counts = Counter(names)
@@ -368,27 +473,261 @@ def populate_agenda_choices(metadata: dict, raw: dict) -> None:
     group_fields["agenda_exclusions"].update(options=[row["id"] for row in global_events], labels=labels)
 
 
-async def persist_agenda_links(config: Any, normalized: dict) -> None:
-    """Persist generated identities through the framework's own config owner."""
-    patch = {key: copy.deepcopy(normalized[key]) for key in ("session_groups", "agenda")}
-    save_async = getattr(config, "save_config_async", None)
-    if callable(save_async):
-        if await save_async(patch) is False:
-            raise ValueError("配置同时发生变化，内部日程关联尚未保存，请重新载入。")
-        return
-    save = getattr(config, "save_config", None)
-    if not callable(save):
-        raise ValueError("框架没有可用的原生配置保存接口，无法保存内部日程关联。")
-    await asyncio.to_thread(save, patch)
-
-
 def publish_agenda_schema(config: Any, metadata: dict) -> None:
     """Refresh only this plugin's public schema, not framework code or files."""
     native = getattr(config, "schema", None)
     if isinstance(native, dict):
         displayed = copy.deepcopy(metadata)
-        # Use the actual config owner even if another field is invalid or an
-        # identity save failed; never publish choices for unpersisted draft IDs.
-        populate_agenda_choices(displayed, config)
+        # Metadata was built from the successfully loaded merged view. Do not
+        # rebuild choices from config, which no longer owns the event catalog.
+        displayed["agenda"]["items"].pop("events", None)
         native.clear()
         native.update(displayed)
+
+
+# Initialize before enabling runtime; serialize initialize/save with the plugin
+# settings lock. A failed save may have committed data: reload, never roll back.
+class AgendaStoreError(ValueError):
+    """A protected or incomplete agenda transaction; contains no private data."""
+
+
+def _hash(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     allow_nan=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def config_only(view: dict) -> dict:
+    """Copy settings only; event records belong exclusively to the data file."""
+    result = dict(view)
+    if isinstance(result.get("agenda"), dict):
+        result["agenda"] = {key: value for key, value in result["agenda"].items()
+                            if key != "events"}
+    return copy.deepcopy(result)
+
+
+def _config_hash(raw: dict) -> str:
+    return _hash(config_only(raw))
+
+
+def _events(value: Any) -> list[dict]:
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise AgendaStoreError("日程数据格式错误，已保护原文件；请检查后重载。")
+    return copy.deepcopy(value)
+
+
+class _AgendaFile(JsonStateFile):
+    @staticmethod
+    def _validate(payload: Any) -> dict:
+        if (not isinstance(payload, dict) or type(payload.get("version")) is not int
+                or payload["version"] != 1 or not isinstance(payload.get("revision"), str)
+                or not payload["revision"]):
+            raise AgendaStoreError("日程文件版本或结构不支持，已保护原文件。")
+        _events(payload.get("events"))
+        pending = payload.get("pending")
+        if pending is not None:
+            if (not isinstance(pending, dict) or not isinstance(pending.get("before"), str)
+                    or not isinstance(pending.get("after"), dict)
+                    or pending.get("after_hash") != _config_hash(pending["after"])
+                    or config_only(pending["after"]) != pending["after"]):
+                raise AgendaStoreError("日程待完成事务损坏，已保护原文件。")
+        return payload
+
+
+# All instances in one AstrBot process share the same transaction boundary,
+# including an old instance finishing during reload. Cross-process writers are
+# not supported; external changes are detected again before every replacement.
+_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+class AgendaStore:
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._file = _AgendaFile(self.path)
+        self._lock = _LOCKS.setdefault(str(self.path.resolve()), asyncio.Lock())
+        self._payload: dict | None = None
+        self.ready = False
+
+    @property
+    def revision(self) -> str:
+        return self._payload["revision"] if self._payload else "uninitialized"
+
+    @staticmethod
+    def config_revision(config: dict) -> str:
+        """Capture the config version when a draft is accepted, before awaits."""
+        return _config_hash(config)
+
+    @property
+    def events(self) -> list[dict]:
+        if not self.ready or self._payload is None:
+            raise AgendaStoreError("日程存储尚未就绪，请检查日志并重载。")
+        return copy.deepcopy(self._payload["events"])
+
+    def view(self, config: dict) -> dict:
+        result = config_only(config)
+        if not isinstance(result.get("agenda", {}), dict):
+            raise AgendaStoreError("日程设置必须为对象；原数据未修改。")
+        result.setdefault("agenda", {})["events"] = self.events
+        return result
+
+    async def check_current(self) -> None:
+        """Reject stale PageAPI instances and external/reload writes."""
+        async with self._lock:
+            if not self.ready or self._payload is None:
+                raise AgendaStoreError("日程存储尚未就绪，请检查日志并重载。")
+            try:
+                current = await self._read()
+            except Exception:
+                self.ready = False
+                raise
+            if current != self._payload:
+                self.ready = False
+                raise AgendaStoreError("日程文件已变化，请重载插件后重新载入页面。")
+
+    async def _read(self) -> dict:
+        return await self._file.load()
+
+    async def _write(self, payload: dict, previous: dict) -> None:
+        if await self._read() != previous:
+            raise AgendaStoreError("日程文件已被另一处修改，请重载；未覆盖已有数据。")
+        await self._file.save(payload)
+        # Retain the durable revision even when the following config save fails.
+        self._payload = copy.deepcopy(payload)
+
+    @staticmethod
+    async def _check_config_file(config: Any, allowed: set[str]) -> None:
+        """Detect native saves performed through a different config instance."""
+        path = getattr(config, "config_path", None)
+        if not path:
+            return
+        def read_hash():
+            try:
+                raw = json.loads(Path(path).read_text(encoding="utf-8-sig"),
+                                 parse_constant=JsonStateFile._reject_nonfinite)
+                if not isinstance(raw, dict):
+                    raise ValueError()
+                return _config_hash(raw)
+            except (OSError, ValueError, TypeError):
+                raise AgendaStoreError("原生配置文件无法核对，已停止日程保存；请检查后重载。") from None
+        if await asyncio.to_thread(read_hash) not in allowed:
+            raise AgendaStoreError("原生配置文件已被另一处更新，请重载；不会覆盖新设置。")
+
+    @staticmethod
+    async def _config_save(config: Any, after: dict, before: str, *, allowed_disk: set[str]) -> None:
+        await AgendaStore._check_config_file(config, allowed_disk)
+        if _config_hash(config) != before:
+            raise AgendaStoreError("原生配置已变化，日程事务已保留，请重载后处理冲突。")
+        save_async = getattr(config, "save_config_async", None)
+        save_sync = getattr(config, "save_config", None)
+        if not callable(save_async) and not callable(save_sync):
+            raise AgendaStoreError("框架缺少配置保存接口，日程待完成事务已保留。")
+        # The framework owns persistence; do not write its file directly. Passing
+        # the complete settings snapshot keeps event records out of config.
+        if callable(save_async):
+            result = await save_async(copy.deepcopy(after))
+        else:
+            result = await asyncio.to_thread(save_sync, copy.deepcopy(after))
+        if result is False or _config_hash(config) != _config_hash(after):
+            raise AgendaStoreError("配置同时被更新，日程事务未完成；请重载，不要回写旧配置。")
+        await AgendaStore._check_config_file(config, {_config_hash(after)})
+
+    async def _finish(self, config: Any, payload: dict) -> dict:
+        pending = payload.get("pending")
+        if pending is None:
+            return payload
+        current = _config_hash(config)
+        if current not in {pending["before"], pending["after_hash"]}:
+            raise AgendaStoreError("未完成的日程事务与当前配置冲突；已保留双方数据，请检查后重载。")
+        # Even if memory already contains 'after', repeat the framework save:
+        # its earlier attempt may have mutated memory before failing on disk.
+        await self._config_save(config, pending["after"], current,
+                                allowed_disk={pending["before"], pending["after_hash"]})
+        complete = copy.deepcopy(payload)
+        complete.pop("pending", None)
+        await self._write(complete, payload)
+        return complete
+
+    async def _transaction(self, config: Any, payload: dict, previous: dict, target: dict) -> dict:
+        payload = copy.deepcopy(payload)
+        payload["revision"] = uuid.uuid4().hex
+        after = config_only(target)
+        payload["pending"] = {"before": _config_hash(config), "after": after,
+                              "after_hash": _config_hash(after)}
+        await self._check_config_file(config, {payload["pending"]["before"]})
+        # fsync + atomic replacement precede the native config save.
+        await self._write(payload, previous)
+        return await self._finish(config, payload)
+
+    async def _run(self, operation) -> dict:
+        async with self._lock:
+            self.ready = False
+            task = asyncio.create_task(operation())
+            try:
+                result = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Do not release the shared lock with an uncancelled writer alive.
+                try:
+                    await task
+                finally:
+                    self.ready = False
+                raise
+            self.ready = True
+            return result
+
+    async def initialize(self, config: Any) -> dict:
+        """Load data, finish pending saves and return the Settings/Pages view.
+
+        A missing file starts with no events. Only agenda.json supplies records;
+        config contributes settings and group links, never an event catalog.
+        """
+        async def operation():
+            previous = await self._read()
+            if previous:
+                self._payload = copy.deepcopy(previous)
+                previous = await self._finish(config, previous)
+            payload = copy.deepcopy(previous) if previous else {
+                "version": 1, "revision": uuid.uuid4().hex, "events": []}
+            raw = config_only(config)
+            if not isinstance(raw.get("agenda", {}), dict):
+                raise AgendaStoreError("日程设置必须为对象；原数据未修改。")
+            if not isinstance(raw.get("session_groups", []), list) or any(
+                    not isinstance(g, dict) for g in raw.get("session_groups", [])):
+                raise AgendaStoreError("会话组格式错误，无法保存日程关联。")
+            raw.setdefault("agenda", {})["events"] = copy.deepcopy(payload["events"])
+            changed = normalize_agenda_links(raw)
+            payload["events"] = copy.deepcopy(raw["agenda"]["events"])
+            if changed:
+                payload = await self._transaction(config, payload, previous, raw)
+            elif not previous:
+                await self._write(payload, previous)
+            self._payload = payload
+            return raw
+        return await self._run(operation)
+
+    async def save(self, config: Any, view: dict, *, expected_revision: str,
+                   expected_config_revision: str | None = None) -> None:
+        """Commit a validated Settings.raw under the caller's settings lock.
+
+        ValueError/IO failure can mean a recoverable partial commit. Callers must
+        stop runtime, preserve files and reload, never perform snapshot rollback.
+        Pages callers must pass the config revision captured with their draft;
+        None keeps compatibility for callers without an earlier config snapshot.
+        """
+        if not self.ready:
+            raise AgendaStoreError("日程事务尚未就绪，请先重载恢复。")
+        target = copy.deepcopy(view)
+        rows = _events(target.get("agenda", {}).get("events"))
+        async def operation():
+            previous = await self._read()
+            if (not previous or previous != self._payload or previous["revision"] != expected_revision
+                    or previous.get("pending") is not None):
+                raise AgendaStoreError("日程已在另一处变更，请重新载入后再保存。")
+            payload = copy.deepcopy(previous)
+            payload["events"] = rows
+            # Main may have awaited alarm shutdown/task cancellation after Pages
+            # accepted this draft. Compare after the disk await, with no await
+            # between this check and _transaction capturing its 'before' hash.
+            if expected_config_revision is not None and _config_hash(config) != expected_config_revision:
+                raise AgendaStoreError("原生配置在保存准备期间已变化，请重新载入；未覆盖新设置或日程。")
+            self._payload = await self._transaction(config, payload, previous, target)
+            return target
+        await self._run(operation)
