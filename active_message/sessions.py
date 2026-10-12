@@ -26,14 +26,22 @@ class SessionScopes:
         self._resolved: dict[str, str] = {}
         self._bare_seen: dict[str, set[str]] = defaultdict(set)
         self._owners: dict[str, SessionGroup] = {}
-        for group in config.groups:
-            for sid in group.sids:
+        for index, group in enumerate(config.groups):
+            label = f"会话组 {index + 1}（{group.name}）"
+            for position, sid in enumerate(group.sids):
                 if sid in self._owners:
-                    raise ValueError(f"SID {sid} appears in multiple groups")
-                if ":" in sid:
-                    split_sid(sid)
-                elif not re.fullmatch(r"-?\d+", sid):
-                    raise ValueError("bare session IDs must be numeric; use full SID otherwise")
+                    owner = self._owners[sid]
+                    if owner is group:
+                        continue
+                    owner_index = next(i for i, item in enumerate(config.groups) if item is owner)
+                    raise ValueError(f"{label}与会话组 {owner_index + 1}（{owner.name}）重复填写 SID：{sid}。请只保留在一个组中。")
+                try:
+                    if ":" in sid:
+                        split_sid(sid)
+                    elif not re.fullmatch(r"-?\d+", sid):
+                        raise ValueError("invalid bare SID")
+                except ValueError:
+                    raise ValueError(f"{label}第 {position + 1} 条 SID 格式错误：{sid}。请填写 平台实例ID:GroupMessage:群号 或 平台实例ID:FriendMessage:会话号；裸号码只能是数字。") from None
                 self._owners[sid] = group
 
     def observe(self, sid: str, raw_session_id: str, group_id: str = "") -> None:

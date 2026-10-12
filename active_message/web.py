@@ -29,11 +29,11 @@ class PageAPI:
         self._prefs_lock = asyncio.Lock()
 
     def register(self):
-        for name in ("bootstrap", "status", "trace", "settings", "preview", "clear", "preferences"):
+        for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences"):
             handler = getattr(self, name)
             self.handlers.append(handler)
             self.plugin.context.register_web_api(f"/{self.plugin.PLUGIN_ID}/{name}", handler,
-                ["POST"] if name in {"settings", "preview", "clear", "preferences"} else ["GET"], "主动会话运行检查台")
+                ["POST"] if name in {"settings", "preview", "preferences"} else ["GET"], "主动会话运行检查台")
 
     def unregister(self):
         registry = self.plugin.context.registered_web_apis
@@ -122,6 +122,7 @@ class PageAPI:
                 cfg = entry.config
                 today = p._now(sid).date().isoformat()
                 sessions.append({"sid":sid, "group":group.name if group else "全局", "matched":matched,
+                    "group_index":next((i for i, item in enumerate(p.plugin_config.groups) if item is group), None),
                     "interjection":matched and cfg.enabled and cfg.interjection_enabled and entry.valid("interjection"),
                     "proactive":matched and cfg.enabled and cfg.proactive_enabled and entry.valid("proactive"),
                     "threshold":cfg.threshold, "agent_active":bool(state and state.agent_active),
@@ -135,9 +136,14 @@ class PageAPI:
                 errors["运行状态"] = {"shared":[["runtime_state.json", "恢复失败；请先备份、检查状态文件并重载。插件已暂停。"]]}
             if not p.agenda_store.ready:
                 errors["日程存储"] = {"agenda":[["agenda.json", "日程存储未就绪或事务未完成；请检查日志后重载，勿回写旧文件。"]]}
+            runs = p.traces.list()
+            for run in runs:
+                _, owner = p.scopes.match(run["sid"])
+                run["group_index"] = next((i for i, item in enumerate(p.plugin_config.groups) if item is owner), None)
             return self._response({"enabled":p._available(), "global_enabled":p.plugin_config.enabled, "sessions":sessions,
+                "groups":[{"index":i, "name":group.name, "key":"group:" + p.settings.raw["session_groups"][i]["agenda_id"]} for i, group in enumerate(p.plugin_config.groups)],
                 "warnings":p.settings.warnings,
-                "unresolved":p.scopes.unresolved(), "runs":p.traces.list(), "capture_raw":p.traces.capture_raw,
+                "unresolved":p.scopes.unresolved(), "runs":runs, "capture_raw":p.traces.capture_raw,
                 "errors":errors})
         except PermissionError as exc: return self._response(error=str(exc))
         except Exception: return self._response(error="状态读取失败，请检查配置与服务状态。")
@@ -166,6 +172,16 @@ class PageAPI:
                 raise ValueError("会话组索引无效，请刷新配置。")
             entry = candidate.groups[index] if index >= 0 else candidate.global_entry
             result = {"effective":public_config(entry.raw), "errors":entry.errors, "warnings":candidate.warnings}
+            # 作息时间轴与日历使用同一预览时区，不能依赖浏览器所在时区。
+            from .schedule import get_timezone
+            sid = candidate.config.groups[index].sids[0] if index >= 0 and candidate.config.groups[index].sids else None
+            timezone_name = entry.config.timezone or self.plugin.context.get_config(umo=sid).get("timezone", "") or ""
+            try:
+                preview_timezone = get_timezone(timezone_name)
+            except (KeyError, ValueError):
+                preview_timezone = get_timezone("")
+            result["schedule_clock"] = {"now":datetime.now(preview_timezone).isoformat(),
+                                        "timezone":timezone_name or str(preview_timezone)}
             if candidate.agenda_catalog_errors:
                 result["errors"] = {**result["errors"], "agenda_catalog": candidate.agenda_catalog_errors}
             if "calendar_month" in data:
@@ -239,13 +255,6 @@ class PageAPI:
             self.plugin.observer.error("CONFIG_SAVE_FAILED", exc)
             return self._response(error="保存未完成，日程可能已安全落盘；请查看日志并重载恢复，不要用旧草稿覆盖。")
 
-    async def clear(self):
-        try:
-            await self._body()
-            self.plugin.traces.clear()
-            return self._response({"cleared":True})
-        except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
-
     @staticmethod
     def _preference_key(username):
         return "console_preferences_" + hashlib.sha256(str(username).encode("utf-8")).hexdigest()
@@ -266,12 +275,23 @@ class PageAPI:
             data = await self._body()
             request = self._auth()
             allowed = {"tab": {"overview", "traces", "groups", "interjection", "proactive", "schedule", "context"},
-                       "theme": {"auto", "light", "dark"}, "tutorial_seen": {True, False}}
+                       "theme": {"auto", "light", "dark"}, "tutorial_seen": {True, False}, "trace_live": {True, False}, "overview_live": {True, False}}
             patch = {}
             for key, value in data.items():
                 if key == "agenda_page_size":
                     if type(value) is not int or not 1 <= value <= 100:
                         raise ValueError("每页日程数量需要 1～100 的整数。")
+                elif key in {"trace_kinds", "trace_results"}:
+                    choices = {"ordinary", "other", "interjection", "proactive"} if key == "trace_kinds" else {"running", "sent", "quiet", "error"}
+                    if not isinstance(value, list) or len(value) > 4 or any(not isinstance(v, str) or v not in choices for v in value):
+                        raise ValueError("回放多选筛选值无效。")
+                    value = list(dict.fromkeys(value))
+                elif key == "trace_minutes":
+                    if type(value) is not int or value not in {0, 5, 30, 60, 180, 360, 720, 1440}:
+                        raise ValueError("回放时间范围无效。")
+                elif key in {"trace_group", "trace_sid"}:
+                    if not isinstance(value, str) or len(value) > (100 if key == "trace_group" else 1000):
+                        raise ValueError("回放会话筛选值无效或过长。")
                 elif key not in allowed or not isinstance(value, (str, bool)) or value not in allowed[key]:
                     raise ValueError("页面偏好字段或取值无效。")
                 patch[key] = value

@@ -58,14 +58,23 @@ class RuntimeStore:
         now = time.time()
         state.last_bot_at = now
         state.recent_bot_timestamps.append(now)
-        if state.last_bot_date != date:
-            state.last_bot_date = date
-            state.daily_proactive_sent = 0
         if proactive:
-            state.daily_proactive_sent += 1
+            self.consume_proactive(sid, date)
             self.unreplied[sid] = self.unreplied.get(sid, 0) + 1
         self.prune(state, config, now)
         return True
+
+    def consume_proactive(self, sid: str, date: str) -> None:
+        """消耗每日主动尝试额度；沿用旧存储字段，保留已有计数。
+
+        正常完成但没发送只调用这里，不改变发言冷却、精力或无人回复数。
+        调用方负责保证一轮只计一次。
+        """
+        state = self.get(sid)
+        if state.last_bot_date != date:
+            state.last_bot_date = date
+            state.daily_proactive_sent = 0
+        state.daily_proactive_sent += 1
 
     def invalidate(self, sid: str, *, preserve_batch: bool = False) -> None:
         state = self.sessions.get(sid)

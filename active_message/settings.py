@@ -118,6 +118,16 @@ class Settings:
         self.schema = schema()
         self.shape_errors = shape_errors(raw, self.schema)
         self.raw = fill_defaults(raw, self.schema)
+        self.warnings = []
+        # 两个配置入口共用这里的规范化；只去除同组重复，不擅自改变跨组归属。
+        for index, group in enumerate(self.raw["session_groups"]):
+            values = group.get("sids", [])
+            if isinstance(values, list) and all(isinstance(value, str) for value in values):
+                clean = [value.strip() for value in values if value.strip()]
+                group["sids"] = list(dict.fromkeys(clean))
+                if len(clean) != len(group["sids"]):
+                    self.warnings.append({"code": "DUPLICATE_SID_REMOVED", "group_index": index,
+                                          "message": f"会话组 {index + 1}（{group.get('name', '')}）内的重复 SID 已自动合并。"})
         # Preserve extension fields in runtime data across normal edits. Schema
         # defaults/validation still apply to every declared event field.
         source_agenda = raw.get("agenda", {}) if isinstance(raw, dict) else {}
@@ -149,14 +159,13 @@ class Settings:
         self.scope_error = ""
         try:
             self.scopes = SessionScopes(self.config)
-        except ValueError:
-            self.scope_error = "SID 格式错误或重复，请检查会话组。"
+        except ValueError as exc:
+            self.scope_error = str(exc)
             self.scopes = SessionScopes(PluginConfig.from_raw({**self.raw, "session_groups": []}))
         global_raw = copy.deepcopy(self.raw)
         global_raw["session_groups"] = []
         global_raw["agenda"]["events"] = [e for e in global_raw["agenda"]["events"] if not e.get("group_id") and not e.get("target_sids")]
         self.global_entry = self._entry(global_raw)
-        self.warnings = []
         for index, group in enumerate(self.config.groups):
             if not group.sids:
                 self.warnings.append({"code": "EMPTY_SESSION_GROUP", "group_index": index, "message": f"会话组 {index + 1} 没有 SID，不会作用于任何会话；列表非空时仍为白名单模式。"})
@@ -248,7 +257,7 @@ class Settings:
         if self.scope_error:
             errors["shared"].append(("session_groups.sids", self.scope_error))
         # Resource/diagnostic limits remain global and bounded, even with the plugin off.
-        for key, low, high in (("max_runs", 1, 500), ("retention_minutes", 1, 1440), ("max_memory_mb", 1, 128), ("max_step_chars", 256, 1048576)):
+        for key, low, high in (("retention_minutes", 1, 1440), ("max_memory_mb", 1, 128), ("max_step_chars", 256, 1048576)):
             value = self.raw.get("diagnostics", {}).get(key)
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
                 errors["shared"].append(("diagnostics." + key, f"请输入 {low}～{high} 的整数。"))

@@ -76,6 +76,7 @@ class SessionRuntimeState:
     recent_bot_timestamps: list[float] = field(default_factory=list)
     last_human_at: float | None = None
     last_bot_at: float | None = None
+    # 旧字段名保留以兼容运行状态文件；现在表示每日主动尝试额度及其日期。
     last_bot_date: str = ""
     daily_proactive_sent: int = 0
     generation: int = 0

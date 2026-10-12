@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.3.0"
+PLUGIN_VERSION = "1.3.1"
 
 import asyncio
 import json
@@ -339,8 +339,11 @@ class ActiveMessagePlugin(Star):
         run_id = uuid.uuid4().hex
         event.set_extra("_active_message_run_id", run_id)
         self.traces.begin(run_id, sid, "收到消息")
-        self._capture(run_id, "收到的消息摘要（媒体为标记）", {"sender":event.get_sender_id(), "message":event.get_message_outline() or event.get_message_str()})
+        self._capture(run_id, "收到的消息摘要", {"sender":event.get_sender_id(), "message":event.get_message_outline() or event.get_message_str()})
         self.traces.finish(run_id, "已接收，未进入插话判断")
+        # 正常唤醒/命令可能在主框架中提前结束，回放分类不能依赖后面的插话钩子。
+        if event.get_message_type() != MessageType.GROUP_MESSAGE or not self._eligible(event):
+            self.traces.finish(run_id, "不是普通群消息，或已由正常唤醒／命令流程处理")
         if not self._eligible(event):
             self.runtime.invalidate(sid)
         elif not state.judging:
@@ -669,7 +672,7 @@ class ActiveMessagePlugin(Star):
             return
         meta = event.get_extra(META_KEY, {})
         proactive = meta.get("trigger_type") == "主动聊天"
-        # Daily limit counts proactively initiated turns, not rich-message parts.
+        # 已发送即消耗一次额度；分段消息不重复计数，未发送的正常完成在收尾计数。
         count_turn = proactive and not event.get_extra("_active_message_sent", False)
         if self.runtime.sent(sid, key, self._now(sid).date().isoformat(), cfg, proactive=count_turn):
             event.set_extra("_active_message_sent", True)
@@ -784,7 +787,7 @@ class ActiveMessagePlugin(Star):
         if current_mood(now, cfg.sleep_hours, cfg.active_hours) == "睡眠":
             return "当前处于睡眠时段。"
         if state.last_bot_date == now.date().isoformat() and state.daily_proactive_sent >= cfg.proactive_daily_limit:
-            return "本会话已达到今日成功主动发言轮次上限。"
+            return "本会话已用完今日主动尝试额度。"
         agenda_reason = self._agenda_block(sid, "proactive")
         if agenda_reason:
             return agenda_reason
@@ -874,6 +877,12 @@ class ActiveMessagePlugin(Star):
                         async with asyncio.timeout(cfg.proactive_timeout_seconds) as deadline:
                             await run_proactive_agent(self, sid, meta)
                             progress.check_deadline()
+                    progress.check_deadline()
+                    if progress.completed and not progress.sent and not any(not task.done() for task in progress.active_tools):
+                        # 此处已完成整轮且通过截止时间检查；失败、取消、前置跳过不计。
+                        self.runtime.consume_proactive(sid, self._now(sid).date().isoformat())
+                        self.observer.log("info", "PROACTIVE_QUOTA_USED", sid=sid, run_id=meta["run_id"],
+                                          daily_proactive_sent=self.runtime.get(sid).daily_proactive_sent)
                 else:
                     progress.outcome = "跳过：插件已停止或正在更新"
         except asyncio.CancelledError:

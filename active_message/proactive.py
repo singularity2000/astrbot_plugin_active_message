@@ -70,7 +70,7 @@ class SessionBoundSendTool(FunctionTool):
         if (self.feature == "proactive" and not event.get_extra("_active_message_sent", False)
                 and state.last_bot_date == now.date().isoformat()
                 and state.daily_proactive_sent >= config.proactive_daily_limit):
-            return "本会话已达到今日成功主动发言轮次上限"
+            return "本会话已用完今日主动尝试额度"
         return ""
 
     def _skip(self, event: Any, reason: str, checkpoint: str) -> str:
@@ -249,6 +249,8 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
             response = runner.get_final_llm_resp()
             if getattr(getattr(runner, "state", None), "name", "") == "ERROR":
                 raise NativeAgentError("NATIVE_AGENT_ERROR")
+            if getattr(getattr(runner, "state", None), "name", "") != "DONE":
+                raise NativeAgentError("NATIVE_AGENT_NOT_COMPLETED")
             summary = "[主动会话] " + (getattr(response, "completion_text", "") or "本次未产生最终文本。")
             progress.enter("history")
             await persist_agent_history(context.conversation_manager, event=event, req=result.provider_request, summary_note=summary)
@@ -261,8 +263,10 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
                 progress.outcome = ("已发送部分消息；后续主动发送已放弃：" if progress.sent
                                     else "主动发送已放弃：") + suppression_reason
             else:
-                progress.outcome = "已发送，任务完成" if progress.sent else "任务完成，未发送"
+                progress.outcome = "已发送，任务完成" if progress.sent else "正常完成，未发送"
             progress.enter("complete")
+            # 不依赖任何第三方“不回复”工具；只认原生 Agent 的整轮完成状态。
+            progress.completed = not bool(suppression_reason)
         finally:
             try:
                 if reset is not None:
@@ -303,7 +307,7 @@ PHASES = {
 
 
 class NativeAgentError(RuntimeError):
-    """The native runner has concluded the run in its ERROR state."""
+    """原生 Agent 返回失败或未确认完成；不能当作正常完成来消耗额度。"""
 
 
 class RunProgress:
@@ -317,6 +321,7 @@ class RunProgress:
         self.calls = 0
         self.tools = 0
         self.sent = False
+        self.completed = False
         self.outcome = ""
         self.last_failure: dict[str, Any] | None = None
         self.deadline_at: float | None = None

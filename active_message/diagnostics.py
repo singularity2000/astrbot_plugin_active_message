@@ -13,13 +13,12 @@ from typing import Any
 class TraceStore:
     def __init__(self, options=None, secrets=()):
         options = options or {}
-        self.capture_raw = bool(options.get("capture_raw", False))
+        self.capture_raw = True
         def bound(key, default, low, high):
             try: return min(high, max(low, int(options.get(key, default))))
             except (TypeError, ValueError): return default
-        self.max_runs = bound("max_runs", 50, 1, 500)
-        self.ttl = bound("retention_minutes", 30, 1, 1440) * 60
-        self.budget = bound("max_memory_mb", 10, 1, 128) * 1024 * 1024
+        self.ttl = bound("retention_minutes", 1440, 1, 1440) * 60
+        self.budget = bound("max_memory_mb", 64, 1, 128) * 1024 * 1024
         self.max_step_chars = bound("max_step_chars", 16000, 256, 1048576)
         self.secrets = tuple(secret for secret in secrets if isinstance(secret, str) and secret)
         self.runs = OrderedDict()
@@ -57,7 +56,7 @@ class TraceStore:
         for key in list(self.runs):
             if key not in self.live and now - self.runs[key].get("finished_at", self.runs[key]["created_at"]) > self.ttl:
                 self.runs.pop(key, None); self.sizes.pop(key, None)
-        while len(self.runs) > self.max_runs or sum(self.sizes.values()) > self.budget:
+        while sum(self.sizes.values()) > self.budget:
             key, _ = self.runs.popitem(last=False)
             self.sizes.pop(key, None)
 
@@ -108,17 +107,14 @@ class TraceStore:
             removed = run["steps"].pop()
             self.sizes[run_id] -= len(json.dumps(removed, ensure_ascii=False).encode("utf-8")) + 128
         step = {"label":label, "at":time.time(), "raw":raw}
-        if raw and not self.capture_raw:
-            step.update(state="未开启文字快照采集")
+        text = self._safe_json(data)
+        shortened = len(text) > self.max_step_chars
+        safe_data = {"preview": text[:self.max_step_chars], "shortened": True, "projected_chars_at_least": len(text)} if shortened else json.loads(text)
+        size = len(json.dumps(safe_data, ensure_ascii=False).encode("utf-8"))
+        if size + self.sizes.get(run_id, 0) + 512 > self.budget:
+            step.update(state="超过容量，未保留正文", bytes=size)
         else:
-            text = self._safe_json(data)
-            shortened = len(text) > self.max_step_chars
-            safe_data = {"preview": text[:self.max_step_chars], "shortened": True, "projected_chars_at_least": len(text)} if shortened else json.loads(text)
-            size = len(json.dumps(safe_data, ensure_ascii=False).encode("utf-8"))
-            if size + self.sizes.get(run_id, 0) + 512 > self.budget:
-                step.update(state="超过容量，未保留正文", bytes=size)
-            else:
-                step.update(state="文字预览已缩减" if shortened else "已记录文字（媒体编码与已知凭据已隐藏）", data=safe_data)
+            step.update(state="文字预览已缩减" if shortened else "已记录文字（媒体编码与已知凭据已隐藏）", data=safe_data)
         run["steps"].append(step)
         self.sizes[run_id] += len(json.dumps(step, ensure_ascii=False).encode("utf-8")) + 128
         self._prune()
@@ -179,7 +175,7 @@ MESSAGES = {
     "CONFIG_SAVE_FAILED": "配置保存失败，未切换运行配置；请刷新页面并检查日志。",
     "SCHEDULE_REPAIRED": "保存的计划时间无效或缺少时区，已为该会话重新安排，不影响其他会话。",
     "ORIGINAL_ACTIVE_REPLY_ENABLED": "该会话仍开启 AstrBot 原版主动回复，本插件已跳过智能插话。请先关闭原版主动回复。",
-    "CONFIG_INVALID": "配置有误；仅暂停受影响功能，请按 field 字段位置和 explanation 说明修正。",
+    "CONFIG_INVALID": "配置有误；对应功能已暂停，SID 范围或公共配置错误可能暂停整个插件。请按 field 位置和 explanation 说明修正。",
     "GROUP_HISTORY_DISABLED": "未启用或无法访问原生群消息历史，已跳过本轮。请开启 AstrBot 群消息历史保存，或明确选择 runtime 不完整摘要模式。",
     "GROUP_HISTORY_READ_FAILED": "读取原生群消息历史失败，已跳过本轮；请检查主框架消息历史服务。",
     "CONTEXT_HISTORY_INVALID": "当前分支历史不是有效的消息列表，已跳过本轮；请检查主框架会话数据。",
@@ -199,12 +195,13 @@ MESSAGES = {
     "AGENT_REQUESTED": "插话判断通过，已交给原生 Agent。",
     "AGENT_STARTED": "原生 Agent 已开始主动聊天。",
     "AGENT_DONE": "原生 Agent 已结束；是否发送以 MESSAGE_SENT 为准。",
-    "MESSAGE_SENT": "已确认一次发送成功；每日主动轮次按成功发言的任务计数。",
+    "MESSAGE_SENT": "已确认一次发送成功；主动任务本轮消耗一次额度，分段发送不重复计数。",
     "ACTIVATION_PROMPT_INJECTED": "激活指令已注入，外部文本在用户层作为参考资料传递。",
     "PROACTIVE_SCHEDULED": "已安排下次主动聊天时间；只有最早的待执行计划会设置闹钟。",
     "PROACTIVE_SKIPPED": "本次主动机会未满足作息、上限、冷却、会话或平台条件，已跳过。",
     "PROACTIVE_SEND_SKIPPED": "发送前检查决定放弃本次发送；这是业务限制，不代表模型调用失败。",
-    "PROACTIVE_NO_SEND": "本轮 Agent 没有成功发送，不计入每日成功轮次。",
+    "PROACTIVE_NO_SEND": "本轮尚未确认发送；是否消耗每日额度以整轮最终结果为准。",
+    "PROACTIVE_QUOTA_USED": "本轮正常完成但未发送，已消耗一次主动尝试额度；发言冷却和无人回复数不变。",
     "PROACTIVE_RUN_FAILED": "主动聊天执行失败或超时；已发送内容不会撤回，将重新安排下次机会。",
     "PROACTIVE_TIMEOUT": "主动聊天达到整轮时间上限；请查看停留阶段、各阶段耗时和最近一次模型／工具结果。",
     "PROACTIVE_PROGRESS": "主动聊天执行阶段已更新。",
