@@ -666,6 +666,7 @@ def publish_agenda_schema(config: Any, metadata: dict) -> None:
         # Metadata was built from the successfully loaded merged view. Do not
         # rebuild choices from config, which no longer owns the event catalog.
         displayed["agenda"]["items"].pop("events", None)
+        displayed["session_groups"]["templates"]["group"]["items"].pop("agenda_exclusions", None)
         native.clear()
         native.update(displayed)
 
@@ -687,7 +688,20 @@ def config_only(view: dict) -> dict:
     if isinstance(result.get("agenda"), dict):
         result["agenda"] = {key: value for key, value in result["agenda"].items()
                             if key != "events"}
+    if isinstance(result.get("session_groups"), list):
+        result["session_groups"] = [
+            {key: value for key, value in group.items() if key != "agenda_exclusions"}
+            if isinstance(group, dict) else group for group in result["session_groups"]]
     return copy.deepcopy(result)
+
+
+def agenda_exclusions(view: dict) -> dict[str, list[str]]:
+    """Persist group exclusions with events, keyed by stable group IDs."""
+    if not isinstance(view.get("session_groups", []), list):
+        return {}
+    return {group["agenda_id"]: copy.deepcopy(group.get("agenda_exclusions", []))
+            for group in view.get("session_groups", [])
+            if isinstance(group, dict) and group.get("agenda_id")}
 
 
 def _config_hash(raw: dict) -> str:
@@ -708,6 +722,12 @@ class _AgendaFile(JsonStateFile):
                 or not payload["revision"]):
             raise AgendaStoreError("日程文件版本或结构不支持，已保护原文件。")
         _events(payload.get("events"))
+        exclusions = payload.get("exclusions", {})
+        if (not isinstance(exclusions, dict) or any(
+                not isinstance(key, str) or not isinstance(ids, list)
+                or any(not isinstance(ident, str) for ident in ids)
+                for key, ids in exclusions.items())):
+            raise AgendaStoreError("日程排除记录格式错误，已保护原文件。")
         pending = payload.get("pending")
         if pending is not None:
             if (not isinstance(pending, dict) or not isinstance(pending.get("before"), str)
@@ -752,6 +772,11 @@ class AgendaStore:
         if not isinstance(result.get("agenda", {}), dict):
             raise AgendaStoreError("日程设置必须为对象；原数据未修改。")
         result.setdefault("agenda", {})["events"] = self.events
+        groups = result.get("session_groups", [])
+        for group in groups if isinstance(groups, list) else []:
+            if isinstance(group, dict):
+                group["agenda_exclusions"] = copy.deepcopy(
+                    self._payload.get("exclusions", {}).get(group.get("agenda_id"), []))
         return result
 
     async def check_current(self) -> None:
@@ -876,13 +901,23 @@ class AgendaStore:
                 raw["agenda"] = {}
             raw.setdefault("agenda", {})["events"] = copy.deepcopy(payload["events"])
             groups = raw.get("session_groups", [])
+            # Preserve older exclusions when still available on first load.
+            exclusions = payload.get("exclusions", agenda_exclusions(config))
+            if isinstance(groups, list):
+                for group in groups:
+                    if isinstance(group, dict):
+                        group["agenda_exclusions"] = copy.deepcopy(exclusions.get(group.get("agenda_id"), []))
             # Settings supplies defaults for incompatible configuration shapes.
             # Do not infer or persist group links from an unreadable scope.
-            changed = normalize_agenda_links(raw) if isinstance(groups, list) and all(isinstance(g, dict) for g in groups) else False
+            if isinstance(groups, list) and all(isinstance(g, dict) for g in groups):
+                normalize_agenda_links(raw)
+            changed = config_only(raw) != config_only(config)
             payload["events"] = copy.deepcopy(raw["agenda"]["events"])
+            payload["exclusions"] = agenda_exclusions(raw) if isinstance(groups, list) else {}
             if changed:
                 payload = await self._transaction(config, payload, previous, raw)
-            elif not previous:
+            elif payload != previous:
+                payload["revision"] = uuid.uuid4().hex
                 await self._write(payload, previous)
             self._payload = payload
             return raw
@@ -908,6 +943,7 @@ class AgendaStore:
                 raise AgendaStoreError("日程已在另一处变更，请重新载入后再保存。")
             payload = copy.deepcopy(previous)
             payload["events"] = rows
+            payload["exclusions"] = agenda_exclusions(target)
             # Main may have awaited alarm shutdown/task cancellation after Pages
             # accepted this draft. Compare after the disk await, with no await
             # between this check and _transaction capturing its 'before' hash.
@@ -915,6 +951,25 @@ class AgendaStore:
                 raise AgendaStoreError("原生配置在保存准备期间已变化，请重新载入；未覆盖新设置或日程。")
             self._payload = await self._transaction(config, payload, previous, target)
             return target
+        await self._run(operation)
+
+    async def save_data(self, config: Any, view: dict, *, expected_revision: str,
+                        expected_config_revision: str) -> None:
+        """Save events/exclusions only; never invoke native config persistence."""
+        if not self.ready:
+            raise AgendaStoreError("日程存储尚未就绪，请先重载恢复。")
+        rows, exclusions = _events(view["agenda"]["events"]), agenda_exclusions(view)
+        async def operation():
+            previous = await self._read()
+            if (not previous or previous != self._payload or previous["revision"] != expected_revision
+                    or previous.get("pending") is not None):
+                raise AgendaStoreError("日程已在另一处变更，请刷新日程后重试。")
+            await self._check_config_file(config, {expected_config_revision})
+            if _config_hash(config) != expected_config_revision:
+                raise AgendaStoreError("会话组或设置已变化，请重新载入页面后重试。")
+            payload = copy.deepcopy(previous)
+            payload.update(events=rows, exclusions=exclusions, revision=uuid.uuid4().hex)
+            await self._write(payload, previous)
         await self._run(operation)
 
     async def append(self, config: Any, rows: list[dict], *, expected_revision: str) -> None:

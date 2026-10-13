@@ -1059,6 +1059,29 @@ class ActiveMessagePlugin(Star):
                     self.runtime.get(sid).proactive_next_run = None
                 await self._persist_state()
 
+    async def apply_agenda(self, candidate: Settings, *, expected_revision: str,
+                           expected_config_revision: str) -> None:
+        """Swap agenda rules after durable write without cancelling live work."""
+        async def commit():
+            await self.agenda_store.save_data(self.config_raw, candidate.raw,
+                                              expected_revision=expected_revision,
+                                              expected_config_revision=expected_config_revision)
+            candidate.scopes.inherit_observations(self.scopes)
+            self.settings = candidate
+            self.scopes = candidate.scopes
+            self.plugin_config = candidate.config
+            self._config_errors = candidate.blocking_errors()
+            self._interjection_valid = candidate.global_entry.valid("interjection")
+            self._proactive_valid = candidate.global_entry.valid("proactive")
+            publish_agenda_schema(self.config_raw, candidate.schema)
+            self._alarm.wake()
+        task = asyncio.create_task(commit())
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
     async def apply_settings(self, candidate: Settings) -> None:
         # A disconnected browser must not leave disk and running settings divergent.
         task = asyncio.create_task(self._apply_settings_transaction(candidate))

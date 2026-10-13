@@ -7,7 +7,7 @@ import copy
 import hashlib
 import json
 import time
-from .agenda import config_only
+from .agenda import config_only, agenda_exclusions, normalize_agenda_links, event_schema, Agenda
 from .settings import Settings, shape_errors, schema
 from .prompts import placeholder_catalog
 
@@ -29,21 +29,24 @@ class PageAPI:
         self._prefs_lock = asyncio.Lock()
 
     def register(self):
-        for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences", "redistribute"):
+        for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences", "redistribute", "agenda_data", "agenda"):
             handler = getattr(self, name)
             self.handlers.append(handler)
             self.plugin.context.register_web_api(f"/{self.plugin.PLUGIN_ID}/{name}", handler,
-                ["POST"] if name in {"settings", "preview", "preferences", "redistribute"} else ["GET"], "主动会话运行检查台")
+                ["POST"] if name in {"settings", "preview", "preferences", "redistribute", "agenda"} else ["GET"], "主动会话运行检查台")
 
     def unregister(self):
         registry = self.plugin.context.registered_web_apis
         registry[:] = [api for api in registry if api[1] not in self.handlers]
 
     def revision(self):
+        return self.plugin.agenda_store.config_revision(self.plugin.config_raw)
+
+    def _agenda_snapshot(self):
         store = self.plugin.agenda_store
-        return hashlib.sha256(json.dumps({"config": config_only(self.plugin.config_raw),
-            "agenda_revision": store.revision, "events": store.events},
-            sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+        view = store.view(self.plugin.config_raw)
+        return {"revision": store.revision, "config_revision": self.revision(),
+                "events": view["agenda"]["events"], "exclusions": agenda_exclusions(view)}
 
     def _auth(self):
         from astrbot.api.web import request
@@ -72,9 +75,9 @@ class PageAPI:
     def _candidate(self, data):
         raw = data.get("config")
         if not isinstance(raw, dict): raise ValueError("缺少配置对象。")
-        raw = copy.deepcopy(raw)
-        if not isinstance(raw.get("agenda"), dict) or "events" not in raw["agenda"]:
-            raise ValueError("日程草稿不完整，请重新载入；不会用空列表替换已有日程。")
+        # Config drafts never own runtime records. Merge current data even if
+        # the browser still holds a snapshot from before an Agent tool write.
+        raw = self.plugin.agenda_store.view(raw)
         problems = shape_errors(raw, schema())
         if problems:
             raise ValueError("；".join(path + "：" + hint for path, hint in problems))
@@ -83,6 +86,9 @@ class PageAPI:
             decision["jev_api_key"] = self.plugin.settings.config.decision.jev_api_key
         if not isinstance(raw.get("session_groups", []), list):
             raise ValueError("会话组必须为列表。")
+        retained = {g.get("agenda_id") for g in raw.get("session_groups", [])}
+        removed = {g["agenda_id"] for g in self.plugin.settings.raw["session_groups"]} - retained
+        raw["agenda"]["events"] = [e for e in raw["agenda"]["events"] if e.get("group_id") not in removed]
         candidate = Settings(raw)
         candidate.agenda_revision = self.plugin.agenda_store.revision
         candidate.config_revision = self.plugin.agenda_store.config_revision(self.plugin.config_raw)
@@ -96,11 +102,12 @@ class PageAPI:
                 config = public_config(self.plugin.settings.raw)
                 metadata = copy.deepcopy(self.plugin.settings.schema)
                 revision = self.revision()
+                agenda_data = self._agenda_snapshot()
             providers = []
             for provider in self.plugin.context.get_all_providers():
                 meta = provider.meta()
                 providers.append({"id":str(meta.id), "name":str(getattr(meta, "model", "") or meta.id)})
-            return self._response({"config":config, "schema":metadata,
+            return self._response({"config":config, "schema":metadata, "agenda_data":agenda_data,
                                    "revision":revision, "providers":providers, "errors":self.plugin.settings.blocking_errors(),
                                    "warnings":self.plugin.settings.warnings, "placeholders":placeholder_catalog(),
                                    "preferences":await self._read_preferences(request.username)})
@@ -191,12 +198,29 @@ class PageAPI:
                 preview_timezone = get_timezone("")
             result["schedule_clock"] = {"now":datetime.now(preview_timezone).isoformat(),
                                         "timezone":timezone_name or str(preview_timezone)}
+            # Runtime timelines/calendar follow saved settings, independently
+            # of an unrelated configuration draft in this browser.
+            live = self.plugin.settings
+            group_id = candidate.raw["session_groups"][index]["agenda_id"] if index >= 0 else None
+            live_index = next((i for i, group in enumerate(live.raw["session_groups"])
+                               if group["agenda_id"] == group_id), -1)
+            if index >= 0 and live_index < 0:
+                return self._response(result)
+            live_entry = live.groups[live_index] if live_index >= 0 else live.global_entry
+            live_sid = live.config.groups[live_index].sids[0] if live_index >= 0 and live.config.groups[live_index].sids else None
+            live_timezone = live_entry.config.timezone or self.plugin.context.get_config(umo=live_sid).get("timezone", "") or ""
+            try:
+                live_tz = get_timezone(live_timezone)
+            except (KeyError, ValueError):
+                live_tz = get_timezone("")
+            result["live_effective"] = public_config(live_entry.raw)
+            result["live_schedule_clock"] = {"now": datetime.now(live_tz).isoformat(), "timezone": live_timezone or str(live_tz)}
             if candidate.agenda_catalog_errors:
                 result["errors"] = {**result["errors"], "agenda_catalog": candidate.agenda_catalog_errors}
             if "calendar_month" in data:
+                candidate, index, entry = live, live_index, live_entry
                 from .agenda import Agenda
                 from .schedule import get_timezone
-                candidate.scopes.inherit_observations(self.plugin.scopes)
                 # The card list retains its editing scope when the calendar is
                 # narrowed to a SID. Date filtering is a separate projection.
                 list_catalog = copy.deepcopy(entry.raw["agenda"])
@@ -258,7 +282,7 @@ class PageAPI:
             async with self.plugin._settings_lock:
                 await self.plugin.agenda_store.check_current()
                 if data.get("revision") != self.revision():
-                    raise ValueError("设置或日程已经变更，请重新载入后再重新分配。")
+                    raise ValueError("设置已经变更，请重新载入后再重新分配。")
                 result = await self.plugin.redistribute_proactive(sid, revision)
             return self._response(result)
         except (ValueError, PermissionError) as exc:
@@ -278,11 +302,104 @@ class PageAPI:
                 if candidate.blocking_errors():
                     return self._response({"errors":candidate.blocking_errors()}, error="配置有误，尚未保存。请查看字段说明。")
                 await self.plugin.apply_settings(candidate)
-                return self._response({"revision":self.revision(), "config":public_config(candidate.raw)})
+                return self._response({"revision":self.revision(), "config":public_config(candidate.raw),
+                                       "agenda_data":self._agenda_snapshot()})
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
         except Exception as exc:
             self.plugin.observer.error("CONFIG_SAVE_FAILED", exc)
             return self._response(error="保存未完成，日程可能已安全落盘；请查看日志并重载恢复，不要用旧草稿覆盖。")
+
+    async def agenda_data(self):
+        try:
+            self._auth()
+            async with self.plugin._settings_lock:
+                await self.plugin.agenda_store.check_current()
+                return self._response(self._agenda_snapshot())
+        except (ValueError, PermissionError) as exc:
+            return self._response(error=str(exc))
+        except Exception as exc:
+            self.plugin.observer.error("PAGE_READ_FAILED", exc)
+            return self._response(error="日程读取失败，请检查日志；已有数据不会被覆盖。")
+
+    async def agenda(self):
+        """Mutate runtime agenda only, using the saved config and stable IDs."""
+        try:
+            data = await self._body()
+            async with self.plugin._settings_lock:
+                store = self.plugin.agenda_store
+                await store.check_current()
+                if data.get("config_revision") != self.revision():
+                    raise ValueError("会话组或设置已在另一处变更，请重新载入页面后重试。")
+                if data.get("revision") != store.revision:
+                    raise ValueError("日程已在另一处变更，请关闭弹窗，刷新日程后重新编辑。")
+                raw = store.view(self.plugin.config_raw)
+                rows = raw["agenda"]["events"]
+                by_id = {row["id"]: row for row in rows}
+                groups = {g["agenda_id"]: g for g in raw.get("session_groups", [])}
+                action = data.get("action")
+                if action == "upsert":
+                    row = data.get("event")
+                    if not isinstance(row, dict):
+                        raise ValueError("缺少日程内容。")
+                    problems = shape_errors(row, event_schema()["templates"]["event"]["items"])
+                    if problems:
+                        raise ValueError("；".join(hint for _, hint in problems))
+                    original_id = data.get("original_id")
+                    if original_id is not None and (not isinstance(original_id, str) or original_id not in by_id):
+                        raise ValueError("这条日程已不存在，请刷新日程。")
+                    if (original_id is not None and row.get("id") != original_id
+                            or original_id is None and row.get("id") in by_id):
+                        raise ValueError("日程标识冲突，请刷新后重试。")
+                    if row.get("group_id") and row["group_id"] not in groups:
+                        raise ValueError("请先保存会话组，再为它添加或关联日程。")
+                    if (row.get("target_sids") and not raw["agenda"].get("outside_scope")
+                            and row.get("target_sids") != by_id.get(original_id, {}).get("target_sids")):
+                        raise ValueError("请先保存并开启范围外日程功能，再设置指定会话。")
+                    row = copy.deepcopy(by_id.get(original_id, {})) | copy.deepcopy(row)
+                    errors = Agenda({**raw["agenda"], "events": [row]}, max_events=1000).errors
+                    if errors:
+                        raise ValueError("；".join(hint for _, hint in errors))
+                    if original_id is None:
+                        rows.append(row)
+                    else:
+                        rows[rows.index(by_id[original_id])] = row
+                elif action in {"delete", "exclude", "restore", "clean_exclusions"}:
+                    ids = data.get("ids", [])
+                    if not isinstance(ids, list) or any(not isinstance(ident, str) for ident in ids):
+                        raise ValueError("日程选择无效。")
+                    if action != "clean_exclusions" and (not ids or any(ident not in by_id for ident in ids)):
+                        raise ValueError("所选日程已变化，请刷新日程后重试。")
+                    if action == "delete":
+                        raw["agenda"]["events"] = [row for row in rows if row["id"] not in ids]
+                    else:
+                        group = groups.get(data.get("group_id"))
+                        if group is None:
+                            raise ValueError("请先保存会话组，再调整本组日程。")
+                        if any(by_id[ident].get("group_id") or by_id[ident].get("target_sids") for ident in ids):
+                            raise ValueError("只能排除或恢复共享的全局日程。")
+                        excluded = group.get("agenda_exclusions", [])
+                        group["agenda_exclusions"] = (list(dict.fromkeys(excluded + ids)) if action == "exclude"
+                                                       else [ident for ident in excluded if ident not in ids])
+                else:
+                    raise ValueError("不支持的日程操作。")
+                normalize_agenda_links(raw)
+                candidate = Settings(raw)
+                if action == "upsert":
+                    # Other orphaned records remain editable; do not let one
+                    # deleted group prevent repairing the rest one at a time.
+                    errors = [hint for path, hint in candidate.agenda_catalog_errors if not path.endswith(".group_id")]
+                    errors.extend(hint for entry in [candidate.global_entry, *candidate.groups]
+                                  for _, hint in entry.errors.get("agenda", []))
+                    if errors:
+                        raise ValueError("；".join(dict.fromkeys(errors)))
+                await self.plugin.apply_agenda(candidate, expected_revision=data["revision"],
+                                               expected_config_revision=data["config_revision"])
+                return self._response(self._agenda_snapshot())
+        except (ValueError, PermissionError) as exc:
+            return self._response(error=str(exc))
+        except Exception as exc:
+            self.plugin.observer.error("AGENDA_SAVE_FAILED", exc)
+            return self._response(error="日程保存未完成，请刷新日程确认结果；输入仍保留。如持续失败，请检查日志。")
 
     @staticmethod
     def _preference_key(username):

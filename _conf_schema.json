@@ -655,14 +655,6 @@
               "关闭"
             ]
           },
-          "agenda_exclusions": {
-            "type": "list",
-            "description": "本组不使用的全局日程",
-            "default": [],
-            "options": [],
-            "labels": [],
-            "hint": "从已保存的全局日程中选择本组不想使用的安排，只影响本组。同名日程会显示时间以便区分。新增或修改日程后，先保存，再重新打开配置页更新选择列表；Pages 可直接点“本组排除”。"
-          },
           "agenda_id": {
             "type": "string",
             "description": "日程分组标识",

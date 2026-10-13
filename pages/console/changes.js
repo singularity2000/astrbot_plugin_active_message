@@ -1,7 +1,7 @@
 /* Draft comparison is local, value-free, and independent of preview requests. */
 (() => {
   'use strict';
-  const internal=key=>key==='__template_key';
+  const internal=key=>key==='__template_key'||key==='agenda_exclusions';
   const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
   function equal(a,b){
     if(a===b)return true;
@@ -83,24 +83,6 @@
         }
         const agendaMeta=schema.agenda?.items||{};
         walk(Object.fromEntries(Object.entries(saved.agenda||{}).filter(([k])=>k!=='events')),Object.fromEntries(Object.entries(current.agenda||{}).filter(([k])=>k!=='events')),agendaMeta,['全局','作息与日程']);
-        const events=current.agenda?.events||[],oldEvents=saved.agenda?.events||[],eventFields={...(agendaMeta.events?.templates?.event?.items||{}),group_id:{description:'日程适用范围'},target_sids:{type:'list',description:'指定会话 SID'}};
-        if(!equal(events,oldEvents)){
-          const scope=(e,sourceGroups)=>{if(e.target_sids?.length)return '指定会话';if(!e.group_id)return '全局';const i=sourceGroups.findIndex(g=>g.agenda_id===e.group_id);return i<0?'未关联会话组':groupName(sourceGroups[i],i);};
-          const ordinals=rows=>{const counts=new Map(),result=new Map();for(const e of rows){const n=(counts.get(e.group_id||'')||0)+1;counts.set(e.group_id||'',n);result.set(e,n);}return result;};
-          const newOrdinals=ordinals(events),oldOrdinals=ordinals(oldEvents);
-          const label=(e,sourceGroups)=>[scope(e,sourceGroups),'作息与日程','日程「'+(e.title||'未命名日程')+'」（'+((sourceGroups===groups?newOrdinals:oldOrdinals).get(e))+'）'];
-          // Schedule IDs are stable, so unrelated items never appear changed when another is removed.
-          const seen=new Set(),oldById=new Map(),newIds=new Set(events.map(e=>e.id));
-          oldEvents.forEach((event,index)=>{if(!oldById.has(event.id))oldById.set(event.id,[]);oldById.get(event.id).push(index);});
-          for(const event of events){
-            const index=oldById.get(event.id)?.shift()??-1;
-            if(index<0){add(label(event,groups),'（新增）');continue;}
-            seen.add(index);if(!equal(oldEvents[index],event))walk(oldEvents[index],event,eventFields,label(event,groups));
-          }
-          oldEvents.forEach((e,i)=>{if(!seen.has(i))add(label(e,oldGroups),'（删除）');});
-          const before=oldEvents.filter(e=>newIds.has(e.id)).map(e=>e.id),after=events.filter(e=>oldById.has(e.id)).map(e=>e.id);
-          if(!equal(before,after))add(['作息与日程','日程排列顺序']);
-        }
         return [...new Set(locations)];
       }
     };

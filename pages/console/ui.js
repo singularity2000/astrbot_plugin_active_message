@@ -76,7 +76,7 @@
   window.addEventListener('resize',placeHelp);window.visualViewport?.addEventListener('resize',placeHelp);window.visualViewport?.addEventListener('scroll',placeHelp);
   new MutationObserver(()=>{if(helpActive&&(!helpActive.button.isConnected||helpActive.button.closest('[hidden],[inert]')))hideHelp();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','inert']});
   let activeDialog=false;
-  function dialog({title, message='', confirm='确定', cancel='取消', danger=false, content=null, highlight=null, validate=null, back=null, backDisabled=false}) {
+  function dialog({title, message='', confirm='确定', cancel='取消', danger=false, content=null, highlight=null, validate=null, submit=null, back=null, backDisabled=false}) {
     if(activeDialog)return Promise.resolve(false);
     activeDialog=true;document.dispatchEvent(new Event("active-message-dialog-open"));
     return new Promise(resolve=>{
@@ -92,13 +92,22 @@
         updateHighlight=()=>{const r=highlight.getBoundingClientRect();Object.assign(spot.style,{left:(r.left-5)+'px',top:(r.top-5)+'px',width:(r.width+10)+'px',height:(r.height+10)+'px'});};
         updateHighlight();highlightObserver=new ResizeObserver(updateHighlight);highlightObserver.observe(highlight);window.addEventListener('resize',updateHighlight);window.addEventListener('scroll',updateHighlight,true);
       }
-      let done=false;
+      let done=false,pending=false;
+      const failure=node('p',undefined,'warning');failure.hidden=true;failure.setAttribute('role','alert');box.append(failure);
       const close=value=>{if(done)return;done=true;hideHelp();document.body.append(helpPopup);if(updateHighlight){highlightObserver?.disconnect();window.removeEventListener('resize',updateHighlight);window.removeEventListener('scroll',updateHighlight,true);}layer.remove();shell.inert=wasInert;activeDialog=false;previous?.focus?.();resolve(value);};
-      no.onclick=()=>close(false);yes.onclick=()=>{if(!validate||validate()!==false)close(true);};actions.append(no);
+      no.onclick=()=>{if(!pending)close(false);};yes.onclick=async()=>{
+        if(pending||validate&&validate()===false)return;
+        if(!submit){close(true);return;}
+        pending=true;failure.hidden=true;
+        const controls=[...box.querySelectorAll('button,input,textarea,select')],disabled=controls.map(n=>n.disabled);
+        controls.forEach(n=>n.disabled=true);yes.textContent='正在保存…';
+        try{await submit();close(true);}catch(error){failure.textContent=error.message||'保存失败，请重试。';failure.hidden=false;failure.scrollIntoView({block:'nearest'});}
+        finally{pending=false;controls.forEach((n,i)=>n.disabled=disabled[i]);yes.textContent=confirm;}
+      };actions.append(no);
       if(back){const previousStep=node('button',back);previousStep.disabled=backDisabled;previousStep.onclick=()=>close('back');actions.classList.add('tour-actions');actions.append(previousStep);}
       actions.append(yes);box.append(actions);layer.append(box);document.body.append(layer);
       layer.addEventListener('keydown',event=>{
-        if(event.key==='Escape'){event.preventDefault();close(false);}
+        if(event.key==='Escape'){event.preventDefault();if(!pending)close(false);}
         if(event.key==='Tab'){
           const focusable=[...box.querySelectorAll('button,input,textarea,select,[tabindex="0"]')].filter(n=>!n.disabled);
           if(event.shiftKey&&document.activeElement===focusable[0]){event.preventDefault();focusable.at(-1)?.focus();}

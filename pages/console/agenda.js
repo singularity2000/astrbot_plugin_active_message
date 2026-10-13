@@ -9,14 +9,12 @@
   const shortHint=text=>{const value=String(text||'').replace(/\s+/g,' ').trim();const first=value.split(/[。！？]/)[0];return (first||value).slice(0,88)+(first&&first.length>88?'…':'');};
 
   function newId(){const bytes=new Uint8Array(12);crypto.getRandomValues(bytes);return 'event_'+Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('');}
-  window.createAgendaUI=({state,dirty,render,previewSoon,field,section,persistPrefs})=>{
+  window.createAgendaUI=({state,render,previewSoon,field,section,persistPrefs,saveAgenda,refreshAgenda,fail})=>{
     let group=null,calendar=null,selected='';
-    const listUI=window.createAgendaListUI({state,edit,describe,mark,previewSoon,persistPrefs,freshId});
+    const listUI=window.createAgendaListUI({state,edit,describe,saveAgenda,refreshAgenda,fail,previewSoon,persistPrefs});
     function globalItems(){return state.config.agenda.events.filter(e=>!e.group_id&&!e.target_sids?.length);}
-    function items(){return state.config.agenda.events;}
-    function hasId(id,except){return state.config.agenda.events.some(e=>e!==except&&e.id===id);}
+    function hasId(id,except){return state.config.agenda.events.some(e=>e.id===id&&e.id!==except?.id);}
     function freshId(){let id;do{id=newId();}while(hasId(id)||state.config.session_groups.some(g=>g.agenda_id===id));return id;}
-    function mark(){dirty();render();}
     function monthMove(delta){
       const [y,m]=(state.calendarMonth||calendar?.month).split('-').map(Number),d=new Date(Date.UTC(y,m-1+delta,1));
       if(d.getUTCFullYear()<1900||d.getUTCFullYear()>2199)return;
@@ -24,12 +22,13 @@
       const heading=document.getElementById('calendar-heading');if(heading)heading.textContent=state.calendarMonth+' · 计算中…';
     }
     async function edit(original=null){
+      const revision=state.agendaRevision;
       const fields=state.schema.agenda.items.events.templates.event.items;
       const draft=original?clone(original):Object.fromEntries(Object.entries(fields).map(([k,m])=>[k,clone(m.default)]));
       if(!original){draft.id=freshId();draft.start_date=calendar?.today||new Date().toLocaleDateString('sv-SE');draft.weekdays=[weekdays[(new Date(draft.start_date+'T12:00:00').getDay()+6)%7]];}
       else if(typeof draft.id!=='string'||!/^[A-Za-z0-9_-]{1,80}$/.test(draft.id)||hasId(draft.id,original))draft.id=freshId();
       draft.__template_key='event';
-      const ownerId=group?(group.agenda_id||freshId()):'';if(!original)draft.group_id=ownerId;
+      const ownerId=group?.agenda_id||'';if(!original)draft.group_id=ownerId;
       const form=el('div',undefined,'agenda-editor'),error=el('p',undefined,'warning');error.hidden=true;
       const inputs={};
       function control(key,type=null){
@@ -48,7 +47,7 @@
       }
       control('title');
       const scopeField=el('div',undefined,'agenda-editor-field'),scopeLabel=el('label','日程适用范围'),scopeSelect=el('select');scopeLabel.htmlFor='agenda-scope';scopeSelect.id='agenda-scope';scopeSelect.setAttribute('aria-label','日程适用范围');scopeSelect.add(new Option('全局：适用会话（可在组内排除）','global'));
-      state.config.session_groups.forEach((g,i)=>scopeSelect.add(new Option((i+1)+'. '+g.name,String(i))));const originalOwner=state.config.session_groups.findIndex(g=>g.agenda_id===draft.group_id);scopeSelect.value=draft.group_id&&originalOwner>=0?String(originalOwner):'global';
+      state.saved.session_groups.forEach((g,i)=>scopeSelect.add(new Option((i+1)+'. '+g.name,String(i))));const originalOwner=state.saved.session_groups.findIndex(g=>g.agenda_id===draft.group_id);scopeSelect.value=draft.group_id&&originalOwner>=0?String(originalOwner):'global';
       const scopeHeading=el('div',undefined,'help-label');scopeHeading.append(scopeLabel,help('日程适用范围','全局范围可留空 SID 作为共享日程，也可填写 SID 定向提供。会话组日程由组内全部会话共享。'),el('small','选择全局后，可在下方指定独立会话。','field-hint'));scopeField.append(scopeHeading,scopeSelect);form.append(scopeField);
       const sidField=el('div',undefined,'agenda-editor-field agenda-sids'),sidLabel=el('label','指定会话 SID（可选）'),sidInput=el('textarea');sidInput.id='agenda-target-sids';sidInput.rows=3;sidInput.value=(draft.target_sids||[]).join('\n');sidInput.placeholder='每行一个完整 SID，例如 qq:GroupMessage:123456';sidLabel.htmlFor=sidInput.id;
       sidField.append(sidLabel,sidInput,el('small','留空为共享全局日程；填写后仅列出的会话可见。需开启“向插件生效范围外会话提供全局日程”才能编辑。','field-hint'));form.append(sidField);
@@ -59,7 +58,7 @@
       weekdays.forEach(day=>{const label=el('label'),input=el('input');input.type='checkbox';input.checked=draft.weekdays.includes(day);input.setAttribute('aria-label',day);input.onchange=()=>{draft.weekdays=weekdays.filter(d=>d===day?input.checked:draft.weekdays.includes(d));};label.append(input,el('span',day));weekly.append(label);});form.append(weekly);
       control('cron');control('cron_duration_minutes','number');control('description');control('pause_interjection');control('pause_proactive');form.append(error);
       function visibility(){
-        sidField.hidden=scopeSelect.value!=='global';sidInput.disabled=!state.config.agenda.outside_scope||scopeSelect.value!=='global';
+        sidField.hidden=scopeSelect.value!=='global';sidInput.disabled=!state.saved.agenda.outside_scope||scopeSelect.value!=='global';
         for(const key of ['start_time','end_time'])form.querySelector('[data-event-field="'+key+'"]').hidden=draft.time_mode!=='时段'||draft.repeat==='Cron';
         weekly.hidden=draft.repeat!=='每周';inputs.time_mode.disabled=draft.repeat==='Cron';
         for(const key of ['cron','cron_duration_minutes'])form.querySelector('[data-event-field="'+key+'"]').hidden=draft.repeat!=='Cron';
@@ -78,12 +77,10 @@
         if(!message&&scopeSelect.value==='global'&&!sidInput.disabled){const sids=sidInput.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);if(sids.some(s=>!/^([^:]+):(GroupMessage|FriendMessage):(.+)$/.test(s)))message='指定会话请填写完整 SID，每行一个。';else if(new Set(sids).size!==sids.length)message='指定会话 SID 不能重复。';else draft.target_sids=sids;}
         error.textContent=message;error.hidden=!message;if(message)error.scrollIntoView({block:'nearest'});return !message;
       }
-      if(!await dialog({title:original?'编辑日程':'添加日程',message:'只修改草稿，点击页面右上角“保存并生效”后才用于运行。不会创建未来任务。',content:form,confirm:'加入页面草稿',validate}))return;
-      const list=items();
-      if(scopeSelect.value==='global')draft.group_id='';else{const owner=state.config.session_groups[Number(scopeSelect.value)];owner.agenda_id||=(owner===group?ownerId:freshId());draft.group_id=owner.agenda_id;draft.target_sids=[];}
-      if(original){const index=list.indexOf(original);if(index<0)return;if(!original.group_id&&!original.target_sids?.length)state.config.session_groups.forEach(g=>{g.agenda_exclusions=draft.group_id||draft.target_sids?.length?g.agenda_exclusions.filter(id=>id!==original.id):g.agenda_exclusions.map(id=>id===original.id?draft.id:id);});list[index]=draft;}
-      else list.push(draft);
-      mark();
+      await dialog({title:original?'编辑日程':'添加日程',message:'点击“保存日程”后直接保存，无需再点顶部保存。按已生效的会话组和设置运行；不会创建未来任务。',content:form,confirm:'保存日程',validate,submit:async()=>{
+        if(scopeSelect.value==='global')draft.group_id='';else{draft.group_id=state.saved.session_groups[Number(scopeSelect.value)].agenda_id;draft.target_sids=[];}
+        await saveAgenda({action:'upsert',event:clone(draft),original_id:original?.id??null},revision);
+      }});
     }
     function describe(event){
       const repeat=event.repeat==='每周'?'每周 '+event.weekdays.join('、'):event.repeat==='Cron'?'Cron '+event.cron:event.repeat;
@@ -93,10 +90,10 @@
     function renderList(box){
       const browser=el('div',undefined,'agenda-browser');browser.id='agenda-browser';box.append(browser);listUI.render(browser,group);
       if(!group){
-        const orphaned=state.config.agenda.events.filter(e=>e.group_id&&!state.config.session_groups.some(g=>g.agenda_id===e.group_id));
+        const orphaned=state.config.agenda.events.filter(e=>e.group_id&&!state.saved.session_groups.some(g=>g.agenda_id===e.group_id));
         if(orphaned.length)box.append(el('p',orphaned.length+' 条日程找不到会话组，不会自动退回全局。可筛选“未关联会话组”后重新关联或删除。','warning'));
       }
-      if(group){const missing=group.agenda_exclusions.filter(id=>!globalItems().some(e=>e.id===id));if(missing.length){const note=el('p',missing.length+' 条已排除日程不存在，可清理这些失效选择。','warning'),clear=el('button','清理无效排除');clear.onclick=()=>{group.agenda_exclusions=group.agenda_exclusions.filter(id=>!missing.includes(id));mark();};box.append(note,clear);}}
+      if(group){const missing=group.agenda_exclusions.filter(id=>!globalItems().some(e=>e.id===id));if(missing.length){const note=el('p',missing.length+' 条已排除日程不存在，可清理这些失效选择。','warning'),clear=el('button','清理无效排除');clear.onclick=()=>saveAgenda({action:'clean_exclusions',group_id:group.agenda_id}).catch(fail);box.append(note,clear);}}
     }
     function drawCalendar(){
       const box=document.getElementById('agenda-calendar');if(!box||!calendar)return;
@@ -127,7 +124,7 @@
         const source=state.config.agenda.events.find(e=>e.id===row.id);if(source?.description)card.append(el('p',source.description,'agenda-description'));
         const effects=[row.pause_interjection?'暂停智能插话':'',row.pause_proactive?'暂停主动聊天':''].filter(Boolean);if(effects.length)card.append(el('small',effects.join(' · ')));detail.append(card);}
       box.append(detail);
-      const status=document.getElementById('agenda-now');if(status){status.replaceChildren();status.append(el('strong','日程状态预览 · '+shortTime(calendar.snapshot.now)));if(!state.config.enabled)status.append(el('p','插件总开关已关闭；以下只预览规则，不代表实际已运行。','muted'));const current=calendar.snapshot.current;if(!calendar.enabled)status.append(el('p','日程功能已关闭：机器人不会收到日程背景，日程里的暂停规则也不生效。'));else if(!current.length)status.append(el('p','现在没有正在进行的日程。'));else current.forEach(row=>status.append(el('p',row.title+' · '+timeText(row)+' · '+([row.pause_interjection?'暂停插话':'',row.pause_proactive?'暂停主动聊天':''].filter(Boolean).join('、')||'只提供日程背景'))));const settings=state.effective?.agenda;if(settings)status.append(el('small',String(settings.preview_days)==='0'?'自动日程背景已关闭，Agent 仍可查询和创建日程。':'自动背景预览：'+(settings.preview_days===''?'不限未来范围':settings.preview_days+' 天')+'；条数：'+(settings.max_items||'不限')+'。'));}
+      const status=document.getElementById('agenda-now');if(status){status.replaceChildren();status.append(el('strong','日程状态预览 · '+shortTime(calendar.snapshot.now)));if(!state.saved.enabled)status.append(el('p','插件总开关已关闭；以下只预览规则，不代表实际已运行。','muted'));const current=calendar.snapshot.current;if(!calendar.enabled)status.append(el('p','日程功能已关闭：机器人不会收到日程背景，日程里的暂停规则也不生效。'));else if(!current.length)status.append(el('p','现在没有正在进行的日程。'));else current.forEach(row=>status.append(el('p',row.title+' · '+timeText(row)+' · '+([row.pause_interjection?'暂停插话':'',row.pause_proactive?'暂停主动聊天':''].filter(Boolean).join('、')||'只提供日程背景'))));const settings=state.liveEffective?.agenda;if(settings)status.append(el('small',String(settings.preview_days)==='0'?'自动日程背景已关闭，Agent 仍可查询和创建日程。':'自动背景预览：'+(settings.preview_days===''?'不限未来范围':settings.preview_days+' 天')+'；条数：'+(settings.max_items||'不限')+'。'));}
     }
     return {
       render(root,selectedGroup){
@@ -138,8 +135,11 @@
         for(const key of ['preview_days','max_items'])box.append(group?field('agenda_'+key,gs['agenda_'+key],group,['agenda',key],true):field(key,state.schema.agenda.items[key],state.config.agenda,['agenda',key]));
         if(!group){const advanced=el('details',undefined,'agenda-guidance');advanced.append(el('summary','日程背景说明 · 所有会话共用'),field('background_description',state.schema.agenda.items.background_description,state.config.agenda,['agenda','background_description']));box.append(advanced);}
         if(group)box.append(el('small','本组总览包含共享全局日程、本组日程及组内会话的专属日程；专属安排实际只交给对应 SID。','muted'));
+        group=selectedGroup?state.saved.session_groups.find(g=>g.agenda_id===selectedGroup.agenda_id):null;
+        if(selectedGroup&&!group){box.append(el('p','请先点击顶部“保存并生效”保存这个新会话组，再管理它的日程。','warning'));root.append(box);return;}
+        box.append(el('p','上方开关等配置需点顶部保存；下方日程操作直接保存，按已生效的设置和会话组运行。','muted'));
         renderList(box);root.append(box);const current=el('div',undefined,'agenda-now');current.id='agenda-now';current.append(el('p','正在计算当前日程…'));root.append(current);
-        const month=section('日历预览','按当前草稿显示日程，点击日期查看详情；不能直接在日历中改日程。请在上方列表中编辑，检查无误后点击“保存并生效”。');month.id='agenda-calendar';month.append(el('p','正在计算日历…','muted'));root.append(month);
+        const month=section('日历预览','显示已保存的日程，按已生效的设置计算。点击日期查看详情；修改日程请使用上方列表，保存成功后自动更新。');month.id='agenda-calendar';month.append(el('p','正在计算日历…','muted'));root.append(month);
       },
       previewParams(){return listUI.params();},
       update(data,list){calendar=data;state.calendarMonth=data.month;drawCalendar();if(list)listUI.update(list);}

@@ -22,6 +22,9 @@ def schema():
     """Pages/runtime schema; event records are not native settings."""
     result = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     result["agenda"]["items"]["events"] = event_schema()
+    result["session_groups"]["templates"]["group"]["items"]["agenda_exclusions"] = {
+        "type": "list", "description": "本组不使用的全局日程", "default": [],
+        "options": [], "labels": []}
     return result
 
 

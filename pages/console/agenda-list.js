@@ -1,15 +1,15 @@
-/* Card browsing is UI state; only explicit edits and batch actions change the draft. */
+/* Browsing is UI state; explicit actions save runtime agenda data independently. */
 (() => {
   'use strict';
   const {node:el,dialog,help,helpTag,dateRangePicker}=window.ActiveMessageUI;
   const statusNames={current:'进行中',upcoming:'待发生',expired:'已结束',unknown:'无法判断'};
   const defaults=()=>({keyword:'',status:'active',enabled:'',origin:'',repeat:'',effect:'',excluded:'',start:'',end:''});
-  window.createAgendaListUI=({state,edit,describe,mark,previewSoon,persistPrefs,freshId})=>{
+  window.createAgendaListUI=({state,edit,describe,saveAgenda,refreshAgenda,fail,previewSoon,persistPrefs})=>{
     let group=null,scopeKey=null,configRef=null,filters=defaults(),page=1,pageSize=15,selected=new Set(),metadata=null,metadataById=new Map(),signature='',host=null;
     let controls=null,summary=null,batch=null,grid=null,pager=null,filterSummary=null;
     const configSignature=()=>JSON.stringify(state.config.agenda.events);
     function rows(){
-      const groups=state.config.session_groups,events=state.config.agenda.events;
+      const groups=state.saved.session_groups,events=state.config.agenda.events;
       return events.flatMap(event=>{
         const inherited=!!group&&!event.group_id&&!event.target_sids?.length;
         const targeted=!!event.target_sids?.length;
@@ -46,11 +46,11 @@
     function makeControls(){
       controls=el('div',undefined,'agenda-browser-controls');
       const top=el('div',undefined,'agenda-search-row'),search=el('input'),reset=el('button','重置'),add=el('button',group?'添加本组日程':'添加全局日程','primary');
-      add.onclick=()=>edit();top.append(add);
+      add.onclick=()=>edit();const refresh=el('button','刷新日程');refresh.onclick=()=>refreshAgenda().catch(fail);top.append(add,refresh);
       search.type='search';search.placeholder='搜索日程名称、说明或指定 SID';search.value=filters.keyword;search.setAttribute('aria-label','搜索日程');search.oninput=()=>changeFilter('keyword',search.value);
       top.append(search,choose('时间状态','status',[['active','当前及未来'],['current','进行中'],['upcoming','待发生'],['expired','已结束'],['unknown','无法判断'],['','全部']]));
       reset.onclick=()=>{resetBrowse();makeControls();draw();previewSoon();};
-      top.append(reset,help('日程列表怎么用','搜索名称、说明或指定 SID；多个词用空格隔开，日程需要同时包含这些词。\n不同筛选条件需要同时满足。日期范围看这段时间内有没有安排，不是看日程从哪天开始；只填一端表示另一端不限。查看过去的一次性安排时，时间状态请选择“全部”或“已结束”。\n默认显示当前和未来安排；已停用、已排除是单独的状态。时间状态按最近一次预览和下方显示的时区计算，无法判断的记录默认保留。\n全选只选本页；翻页保留勾选，“跨页取消全部选择”清除所有页的勾选；更换搜索、筛选或会话组会清空勾选。\n每页可填 1～100 的整数，默认 15；删除后后面的日程向前补位，尽量留在原页。\n删除和本组排除只改草稿，右上角“保存并生效”后才用于运行。\n列表的筛选和分页不影响下方日历。'));
+      top.append(reset,help('日程列表怎么用','搜索名称、说明或指定 SID；多个词用空格隔开，日程需要同时包含这些词。\n不同筛选条件需要同时满足。日期范围看这段时间内有没有安排，不是看日程从哪天开始；只填一端表示另一端不限。查看过去的一次性安排时，时间状态请选择“全部”或“已结束”。\n默认显示当前和未来安排；已停用、已排除是单独的状态。时间状态按最近一次预览和下方显示的时区计算，无法判断的记录默认保留。\n全选只选本页；翻页保留勾选，“跨页取消全部选择”清除所有页的勾选；更换搜索、筛选或会话组会清空勾选。\n每页可填 1～100 的整数，默认 15；删除后后面的日程向前补位，尽量留在原页。\n添加、编辑、删除和本组排除均直接保存，无需点击顶部保存；日程按已生效的设置和会话组运行。\n列表的筛选和分页不影响下方日历。'));
       const more=el('div',undefined,'agenda-filter-grid');
       more.append(choose('启用状态','enabled',[['','全部'],['true','已启用'],['false','已停用']]),choose('日程来源','origin',group?[['','全部'],['global','来自全局'],['local','本组新增'],['targeted','指定会话']]:[['','全部'],['global','共享全局'],['targeted','指定会话'],['orphaned','未关联会话组']]),choose('重复方式','repeat',[['','全部'],...['不重复','每天','每周','每年','Cron'].map(value=>[value,value])]),choose('行为影响','effect',[['','全部'],['none','仅提供背景'],['interjection','只暂停插话'],['proactive','只暂停主动聊天'],['both','两者都暂停']]));
       if(group)more.append(choose('本组继承','excluded',[['','全部'],['true','本组已排除'],['false','本组未排除']]));
@@ -60,23 +60,20 @@
       host.replaceChildren(controls,summary,batch,grid,pager);
     }
     function selectedRows(kind){return rows().filter(row=>selected.has(row.event.id)&&(kind==='delete'?!row.inherited:row.inherited&&!row.excluded));}
-    function removeEvents(targets){
-      const ids=new Set(targets.map(row=>row.event.id));state.config.agenda.events=state.config.agenda.events.filter(event=>!ids.has(event.id));
-      for(const owner of state.config.session_groups)owner.agenda_exclusions=owner.agenda_exclusions.filter(id=>!ids.has(id));
-      ids.forEach(id=>selected.delete(id));mark();
-    }
     async function act(kind,targets){
       if(!targets.length)return;
+      const revision=state.agendaRevision,groupId=group?.agenda_id;
       const deletion=kind==='delete',content=el('div',undefined,'agenda-batch-confirm');
       for(const row of targets){const item=el('div'),meta=info(row),scope=row.orphaned?'未关联会话组':row.inherited?'来自全局':row.origin==='targeted'?'指定会话':group?'本组新增':'共享全局';item.append(el('strong',row.event.title||'未命名日程'),el('small',scope+' · '+(statusNames[meta?.status]||'时间状态待计算')+' · '+describe(row.event)));if(row.event.target_sids?.length)item.append(el('small','影响会话：'+row.event.target_sids.join('、')));content.append(item);}
-      const message=deletion?'删除整条日程及其重复规则；共享或指定给多个会话的安排会从这些会话一并移除。只改草稿，保存后生效。':'只让本组不再使用这些全局日程，其他会话继续使用。只改草稿，保存后生效。';
-      if(!await dialog({title:(deletion?'删除所选日程':'本组排除所选')+'（'+targets.length+' 条）',message,content,confirm:deletion?'删除所选':'本组排除',danger:deletion}))return;
-      if(deletion)removeEvents(targets);else{group.agenda_exclusions=[...new Set([...group.agenda_exclusions,...targets.map(row=>row.event.id)])];targets.forEach(row=>selected.delete(row.event.id));mark();}
+      const message=deletion?'删除整条日程及其重复规则；共享或指定给多个会话的安排会从这些会话一并移除。确认后直接保存。':'只让本组不再使用这些全局日程，其他会话继续使用。确认后直接保存。';
+      await dialog({title:(deletion?'删除所选日程':'本组排除所选')+'（'+targets.length+' 条）',message,content,confirm:deletion?'删除所选':'本组排除',danger:deletion,submit:async()=>{
+        await saveAgenda({action:kind,ids:targets.map(row=>row.event.id),group_id:groupId},revision);
+        targets.forEach(row=>selected.delete(row.event.id));draw();
+      }});
     }
     async function repair(event){
-      const select=el('select');select.setAttribute('aria-label','重新关联到哪个范围');select.add(new Option('请选择适用范围',''));select.add(new Option('全局：适用会话（可在组内排除）','global'));state.config.session_groups.forEach((owner,index)=>select.add(new Option((index+1)+'. '+owner.name,String(index))));
-      if(!await dialog({title:'重新关联日程',message:'选择范围后保存生效。选择全局会让继承它的会话都能看到这条日程。',content:select,confirm:'加入页面草稿',validate:()=>!!select.value}))return;
-      if(select.value==='global')event.group_id='';else{const owner=state.config.session_groups[Number(select.value)];owner.agenda_id||=freshId();event.group_id=owner.agenda_id;}mark();
+      const revision=state.agendaRevision,select=el('select');select.setAttribute('aria-label','重新关联到哪个范围');select.add(new Option('请选择适用范围',''));select.add(new Option('全局：适用会话（可在组内排除）','global'));state.saved.session_groups.forEach((owner,index)=>select.add(new Option((index+1)+'. '+owner.name,String(index))));
+      await dialog({title:'重新关联日程',message:'确认后直接保存。选择全局会让继承它的会话都能看到这条日程。',content:select,confirm:'保存日程',validate:()=>!!select.value,submit:()=>saveAgenda({action:'upsert',original_id:event.id,event:{...event,group_id:select.value==='global'?'':state.saved.session_groups[Number(select.value)].agenda_id}},revision)});
     }
     function card(row){
       const {event,inherited,excluded,orphaned}=row,meta=info(row),article=el('article',undefined,'agenda-row');article.dataset.eventId=event.id;article.classList.toggle('agenda-muted',excluded||!event.enabled);article.classList.toggle('agenda-selected',selected.has(event.id));
@@ -90,7 +87,7 @@
       const effects=[];if(event.pause_interjection)effects.push('暂停插话');if(event.pause_proactive)effects.push('暂停主动聊天');if(effects.length)infoBox.append(el('small',effects.join(' · ')));
       if(event.description)infoBox.append(el('p',event.description,'agenda-description'));
       const actions=el('div',undefined,'agenda-row-actions');
-      if(inherited){const toggle=el('button',excluded?'恢复继承':'本组排除');toggle.onclick=()=>{group.agenda_exclusions=excluded?group.agenda_exclusions.filter(id=>id!==event.id):[...group.agenda_exclusions,event.id];mark();};actions.append(toggle);}
+      if(inherited){const toggle=el('button',excluded?'恢复继承':'本组排除');toggle.onclick=()=>saveAgenda({action:excluded?'restore':'exclude',group_id:group.agenda_id,ids:[event.id]}).catch(fail);actions.append(toggle);}
       else{const change=el('button',orphaned?'重新关联':'编辑'),remove=el('button','删除','danger');change.onclick=()=>orphaned?repair(event):edit(event);remove.onclick=()=>act('delete',[row]);actions.append(change,remove);}
       article.append(infoBox,actions);return article;
     }
