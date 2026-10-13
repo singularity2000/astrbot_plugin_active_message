@@ -93,7 +93,7 @@
 
   /* 按真实分钟划分作息色段；当前时间使用服务端预览时区。 */
   function createScheduleStrip({state,el}) {
-    let clock=null,receivedAt=0,selectedSid='',scopeKey='',renderedDate='',selectedAt='';
+    let clock=null,receivedAt=0,selectedSid='',scopeKey='',renderedDate='',selectedAt='',reallocating=false;
     const statuses={pending:'待尝试',running:'进行中',sent:'已发送',quiet:'完成，未发送',failed:'未完成',skipped:'已跳过',missed:'已错过'};
     function ranges(spec){return (spec||'').split(',').filter(p=>p.trim()).map(part=>{const clocks=part.trim().split('-');if(clocks.length!==2)throw Error();return clocks.map(t=>{if(!/^\d{1,2}:\d{2}$/.test(t.trim()))throw Error();const [h,m]=t.trim().split(':').map(Number);if(h>23||m>59)throw Error();return h*60+m;});});}
     const format=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(Math.floor(m%60)).padStart(2,'0');
@@ -103,11 +103,45 @@
     }
     function current(){return new Date(Date.parse(clock?.now||new Date().toISOString())+Date.now()-receivedAt);}
     function sessions(){const group=state.scope>=0?state.config.session_groups[state.scope]:null;return (state.status?.sessions||[]).filter(s=>s.matched&&(group?!!group.agenda_id&&s.group_id===group.agenda_id:s.group_id==null));}
+    function reallocationState(){
+      const selected=sessions().find(s=>s.sid===selectedSid),plan=selected?.reallocation;
+      const now=current(),today=moment(now).day;
+      const count=(selected?.schedule||[]).filter(row=>row.status==='pending'&&Date.parse(row.at)>now.getTime()).length;
+      const reason=reallocating?'正在处理重新分配…':state.tour?'新手引导期间仅供查看。':state.busy?'请等待当前操作完成。':
+        state.dirty?'请先保存或放弃配置草稿，再重新分配。':!selected?'请先选择一个已有预约的会话。':
+        !plan?'正在读取预约信息；若持续不可用，请重载插件并刷新页面。':
+        selected.schedule_timezone!==clock?.timezone?'所选会话时区与时间轴不同，请先在作息设置中统一时区。':
+        plan.reason||((plan.date!==today||!count)?'今天没有未来且尚未尝试的预约。':
+          count!==plan.count?'预约时间已到，正在等待状态刷新。':'');
+      return {selected,plan,reason};
+    }
+    function updateReallocation(){
+      const button=document.getElementById('redistribute-proactive'),hint=document.getElementById('redistribute-hint');if(!button||!hint)return;
+      const {reason}=reallocationState();button.disabled=!!reason;button.title=reason;if(hint.textContent!==reason)hint.textContent=reason;hint.hidden=!reason;
+    }
+    async function redistribute(){
+      const {selected,plan,reason}=reallocationState();if(reason)return;
+      const sid=selected.sid,revision=state.revision,scheduleRevision=plan.revision;
+      let locked=false,saved=false;reallocating=true;updateReallocation();
+      try{
+        const confirmed=await dialog({title:'重新分配主动聊天？',message:'会话：'+sid+'\n日期：'+plan.date+'（'+plan.timezone+'）\n\n将把今天未来、尚未开始的 '+plan.count+' 次预约，在剩余的绿色活跃时段内重新随机安排。已经开始、结束、失败、跳过或错过的机会都不动，不增加次数。\n\n确认后直接保存今天的预约，不修改配置，也不需要点击顶部“保存并生效”。到点仍会检查日程、冷却等条件，不保证一定发出消息。',confirm:'重新分配',cancel:'取消'});
+        if(!confirmed)return;
+        locked=true;busy(true);
+        const result=await api('redistribute',{sid,revision,schedule_revision:scheduleRevision});saved=true;
+        if(statusPending)await statusPending;
+        await refreshStatus();
+        notice('已重新分配 '+result.date+' 的 '+result.count+' 次主动聊天预约，仅影响会话 '+sid+'。');
+      }catch(error){
+        notice(saved?'预约已保存，但页面刷新失败，请刷新查看最新时间：'+error.message:error.message,true);
+        if(!saved)try{if(statusPending)await statusPending;await refreshStatus();}catch{}
+      }finally{reallocating=false;if(locked)busy(false);if(state.tab==='schedule')render();}
+    }
     function updateClock(){
       const marker=document.getElementById('schedule-now');if(!marker||!clock)return;
       const now=current(),point=moment(now);if(renderedDate&&point.day!==renderedDate){render();return;}
       marker.style.left=point.minute/1440*100+'%';marker.dataset.edge=point.minute<120?'start':point.minute>1320?'end':'middle';marker.querySelector('span').textContent='现在 '+format(point.minute);marker.setAttribute('aria-label','当前时间 '+format(point.minute)+'，'+clock.timezone);
       document.querySelectorAll('.schedule-slot[data-status=pending]').forEach(n=>{n.classList.toggle('awaiting-sync',Number(n.dataset.at)<=now.getTime());});
+      updateReallocation();
     }
     function render(){
       const box=document.getElementById('schedule-preview');if(!box||!state.effective)return;
@@ -117,7 +151,7 @@
         const sleep=ranges(cfg.sleep_hours),active=ranges(cfg.active_hours),inside=(items,m)=>items.some(([a,b])=>a===b||(a<b?m>=a&&m<b:m>=a||m<b)),kind=m=>inside(sleep,m)?'sleep':inside(active,m)?'active':'normal';
         const boundaries=[...new Set([0,1440,...sleep.flat(),...active.flat()])].sort((a,b)=>a-b),segments=[];
         for(let i=0;i<boundaries.length-1;i++){const start=boundaries[i],end=boundaries[i+1],status=kind(start),last=segments.at(-1);if(last?.status===status)last.end=end;else segments.push({start,end,status});}
-        const names={sleep:'睡眠 · 安静',active:'活跃 · 也会主动聊',normal:'正常 · 只插话'},axis=el('div',undefined,'schedule-axis'),labels=el('div',undefined,'schedule-boundaries');
+        const names={sleep:'睡眠',normal:'正常 · 智能插话',active:'活跃 · 智能插话+主动聊天'},axis=el('div',undefined,'schedule-axis'),labels=el('div',undefined,'schedule-boundaries');
         const labelPoints=[...segments.map(s=>s.start),1440],lastByRow=[],width=Math.max(180,box.clientWidth-24),labelWidth=38;
         labelPoints.forEach(m=>{const percent=m/1440*100,x=percent/100*width,left=m===0?0:m===1440?width-labelWidth:x-labelWidth/2;let row=lastByRow.findIndex(end=>left>=end+6);if(row<0)row=lastByRow.length;lastByRow[row]=left+labelWidth;const label=el('span',format(m));label.style.left=percent+'%';label.style.top=row*19+'px';label.dataset.edge=m===0?'start':m===1440?'end':'middle';labels.append(label);});
         labels.style.height=(Math.max(...[...labels.children].map(n=>parseInt(n.style.top)),0)+22)+'px';axis.append(labels);
@@ -132,7 +166,9 @@
         slots.forEach(row=>{const date=new Date(row.at),point=moment(date),marker=el('button',undefined,'schedule-slot');marker.type='button';marker.dataset.at=String(date.getTime());marker.dataset.status=row.status;marker.style.left=point.minute/1440*100+'%';const text=format(point.minute)+' · '+(statuses[row.status]||row.status)+(row.reason?' · '+row.reason:'');marker.title=text+'\n'+selected.sid;marker.setAttribute('aria-label',marker.title);marker.onclick=()=>{selectedAt=row.at;explanation.textContent=text;};if(selectedAt===row.at)explanation.textContent=text;track.append(marker);});
         const marker=el('div',undefined,'schedule-now');marker.id='schedule-now';marker.append(el('span','现在'));track.append(marker);axis.append(track);
         toolbar.append(el('small',today+' · '+slots.length+' 个预约点'));box.append(toolbar,axis);
-        const legend=el('div',undefined,'schedule-legend');for(const [key,name] of Object.entries(names)){const item=el('span',name);item.className=key;legend.append(item);}legend.append(el('span','预约点','planned'),el('small','时区：'+(clock?.timezone||cfg.timezone||'跟随框架')));box.append(legend);
+        const legend=el('div',undefined,'schedule-legend');for(const [key,name] of Object.entries(names)){const item=el('span',name);item.className=key;legend.append(item);}legend.append(el('span','预约点','planned'),el('small','时区：'+(clock?.timezone||cfg.timezone||'跟随框架')));
+        const footer=el('div',undefined,'schedule-footer'),action=el('div',undefined,'schedule-reallocation'),button=el('button','重新分配主动聊天'),hint=el('small');
+        button.id='redistribute-proactive';button.onclick=redistribute;hint.id='redistribute-hint';button.setAttribute('aria-describedby',hint.id);hint.setAttribute('role','status');action.append(button,hint);footer.append(legend,action);box.append(footer);
         let note=state.dirty?'色带展示当前草稿。保存后显示实际预约竖线。':!selected?'本范围还没有可展示的会话，请添加完整 SID 或等待该会话收到消息。':!selected.proactive||!state.status?.enabled?'本会话主动聊天尚未启用或暂不可用。':!slots.length?'今天没有待展示的预约。请检查活跃时段；当天较晚启动时可能没有剩余机会。':'细竖线是本会话今天的实际预约，每 5 秒同步结果；灰色表示已过去，绿色表示已发送。';
         box.append(el('p',note,'muted'));if(slots.length)box.append(explanation);
         if(selected?.schedule_timezone&&selected.schedule_timezone!==clock?.timezone)box.append(el('small','预约点按上方预览时区显示；该会话实际时区为 '+selected.schedule_timezone+'。','muted'));
@@ -389,7 +425,7 @@
     intro.append(el('small','拖动卡片手柄或使用上移／下移调整顺序；保存后生效。','muted'));
     const fields=state.schema.session_groups.templates.group.items,grid=el('div',undefined,'group-grid');root.append(grid);
     state.config.session_groups.forEach((group,index)=>{
-      const box=section((index+1)+'. '+(group.name||'未命名组')),head=el('div',undefined,'actions');box.classList.add('group-card');box.dataset.groupIndex=String(index);
+      const box=section((index+1)+'. '+(group.name||'未命名组')),head=el('div',undefined,'actions'),heading=el('div',undefined,'group-card-heading');box.classList.add('group-card');box.dataset.groupIndex=String(index);heading.append(box.querySelector('h2'));box.append(heading);
       const handle=el('button','⠿ 排序','drag-handle');handle.draggable=true;handle.setAttribute('aria-label','拖动排序：'+(group.name||'未命名组'));
       handle.ondragstart=e=>{draggedGroup=group;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(index));box.classList.add('dragging');};
       handle.ondragend=()=>{draggedGroup=null;document.querySelectorAll('.dragging,.drop-target').forEach(n=>n.classList.remove('dragging','drop-target'));};
@@ -399,8 +435,8 @@
       const up=el('button','↑ 上移'),down=el('button','↓ 下移');up.disabled=index===0;down.disabled=index===state.config.session_groups.length-1;
       up.onclick=()=>moveGroup(index,index-1);down.onclick=()=>moveGroup(index,index+1);head.append(handle,up,down);
       const edit=el('button','编辑本组详细设置');edit.onclick=()=>{state.scope=index;state.effective=null;selectTab('interjection');};
-      const remove=el('button','删除此组','danger');remove.onclick=async()=>{if(await dialog({title:'删除这个会话组？',message:'只修改草稿，保存后才生效。同时删除该组专属日程；删除最后一个组会恢复全局范围，请注意影响。',confirm:'删除此组',danger:true})){if(group.agenda_id)state.config.agenda.events=state.config.agenda.events.filter(e=>e.group_id!==group.agenda_id);state.config.session_groups.splice(index,1);state.scope=-1;dirty();render();}};head.append(edit,remove);box.append(head);
-      appendFields(box,group,Object.fromEntries(['name','sids','interjection_mode','proactive_mode','cooldown_override'].map(k=>[k,fields[k]])));
+      const remove=el('button','删除此组','danger');remove.onclick=async()=>{if(await dialog({title:'删除这个会话组？',message:'只修改草稿，保存后才生效。同时删除该组专属日程；删除最后一个组会恢复全局范围，请注意影响。',confirm:'删除此组',danger:true})){if(group.agenda_id)state.config.agenda.events=state.config.agenda.events.filter(e=>e.group_id!==group.agenda_id);state.config.session_groups.splice(index,1);state.scope=-1;dirty();render();}};head.append(edit,remove);heading.append(head);
+      const fieldsBox=el('div',undefined,'group-fields');appendFields(fieldsBox,group,Object.fromEntries(['name','sids','interjection_mode','proactive_mode','cooldown_override'].map(k=>[k,fields[k]])));box.append(fieldsBox);
       const choices=[['智能插话',group.interjection_mode],['主动聊天',group.proactive_mode]],summary=el('div',undefined,'group-choice-summary');
       for(const [name,value] of choices){const badge=el('span',name+'：'+value,value==='跟随全局'?'tag':'override-badge');summary.append(badge);}box.append(summary);
       if(!blank(group.cooldown_override))box.append(el('small','本组覆盖共享冷却：'+group.cooldown_override+' 秒','override-badge'));
@@ -490,7 +526,6 @@
     if(state.run.steps_omitted)steps.append(el('small','本轮达到记录上限，已省略 '+state.run.steps_omitted+' 个过程记录；保留结束摘要。','muted'));
     if(state.traceVisibleRun!==state.run.run_id){state.traceVisibleRun=state.run.run_id;state.traceVisible=100;}
     const tones={decision:'关键判断',success:'成功',warning:'留意',error:'异常'};
-    const legend=el('div',undefined,'trace-key');for(const [tone,label] of Object.entries(tones)){const item=el('span',label,'trace-badge');item.dataset.tone=tone;legend.append(item);}steps.append(legend);
     state.run.steps.slice(0,state.traceVisible).forEach((step,index)=>{const b=el('button',undefined,'step'+(state.step===index?' active':''));b.dataset.tone=step.tone||'neutral';b.setAttribute('aria-pressed',String(state.step===index));b.append(el('span',String(index+1).padStart(2,'0'),'step-number'),el('span',step.label,'step-title'));if(tones[step.tone]){const badge=el('small',tones[step.tone],'trace-badge');badge.dataset.tone=step.tone;b.append(badge);}b.onclick=()=>{state.step=index;drawTrace();};steps.append(b);});
     if(state.run.steps.length>state.traceVisible){const more=el('button','继续显示（还有 '+(state.run.steps.length-state.traceVisible)+' 步）','trace-more');more.onclick=()=>{state.traceVisible+=100;drawTrace();};steps.append(more);}
     if(focusedStep)steps.querySelector('.step.active')?.focus({preventScroll:true});steps.scrollTop=scroll.steps;
@@ -579,11 +614,12 @@
       ['traces','trace-intro','看懂为什么没有开口','选一轮运行，点击“刷新记录”更新阶段和耗时。已发送或正常完成但未发送均占用一次每日主动额度。等待模型、一次尝试未成功、整轮最终失败和因睡眠放弃发送是不同情况；可按会话组、部分 SID、事件类型、执行结果和时间筛选。筛选和自动刷新开关会按登录账号自动记住，重新打开也会恢复，不用保存配置。刷新会保留阅读位置。同一次模型或工具调用的开始、结果和耗时合在一步中；不同次调用分别记录。关键判断用金色提示，发送成功为绿色，异常为红色。单轮最多保存 1000 步，较长记录可点“继续显示”；保留时间和总容量也会影响可查看的内容。文字快照始终临时采集。']
     ];
     try{
-      for(let i=0;i<steps.length;i++){
+      for(let i=0;i<steps.length;){
         const [tab,target,title,message]=steps[i];state.scope=-1;state.effective=null;selectTab(tab,false);
         const n=$(target);n?.classList.add('tutorial-target');n?.scrollIntoView({block:'center'});
-        const next=await dialog({title:(i+1)+' / '+steps.length+'  '+title,message,confirm:i===steps.length-1?'我知道了':'下一步',cancel:'跳过教程',highlight:n});
+        const next=await dialog({title:(i+1)+' / '+steps.length+'  '+title,message,confirm:i===steps.length-1?'我知道了':'下一步',cancel:'跳过教程',back:'上一步',backDisabled:i===0,highlight:n});
         n?.classList.remove('tutorial-target');if(!next)break;
+        i+=next==='back'?-1:1;
       }
       persistPrefs({tutorial_seen:true});
     } finally {state.tour=false;state.scope=previous.scope;state.effective=null;selectTab(previous.tab,false);}

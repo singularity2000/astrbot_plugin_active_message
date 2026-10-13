@@ -76,7 +76,7 @@
   window.addEventListener('resize',placeHelp);window.visualViewport?.addEventListener('resize',placeHelp);window.visualViewport?.addEventListener('scroll',placeHelp);
   new MutationObserver(()=>{if(helpActive&&(!helpActive.button.isConnected||helpActive.button.closest('[hidden],[inert]')))hideHelp();}).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','inert']});
   let activeDialog=false;
-  function dialog({title, message='', confirm='确定', cancel='取消', danger=false, content=null, highlight=null, validate=null}) {
+  function dialog({title, message='', confirm='确定', cancel='取消', danger=false, content=null, highlight=null, validate=null, back=null, backDisabled=false}) {
     if(activeDialog)return Promise.resolve(false);
     activeDialog=true;document.dispatchEvent(new Event("active-message-dialog-open"));
     return new Promise(resolve=>{
@@ -94,7 +94,9 @@
       }
       let done=false;
       const close=value=>{if(done)return;done=true;hideHelp();document.body.append(helpPopup);if(updateHighlight){highlightObserver?.disconnect();window.removeEventListener('resize',updateHighlight);window.removeEventListener('scroll',updateHighlight,true);}layer.remove();shell.inert=wasInert;activeDialog=false;previous?.focus?.();resolve(value);};
-      no.onclick=()=>close(false);yes.onclick=()=>{if(!validate||validate()!==false)close(true);};actions.append(no,yes);box.append(actions);layer.append(box);document.body.append(layer);
+      no.onclick=()=>close(false);yes.onclick=()=>{if(!validate||validate()!==false)close(true);};actions.append(no);
+      if(back){const previousStep=node('button',back);previousStep.disabled=backDisabled;previousStep.onclick=()=>close('back');actions.classList.add('tour-actions');actions.append(previousStep);}
+      actions.append(yes);box.append(actions);layer.append(box);document.body.append(layer);
       layer.addEventListener('keydown',event=>{
         if(event.key==='Escape'){event.preventDefault();close(false);}
         if(event.key==='Tab'){
@@ -124,7 +126,9 @@
     for(const input of [from,to]){input.type='date';input.min='1900-01-01';input.max='2199-12-31';}
     from.value=start;to.value=end;from.setAttribute('aria-label','筛选开始日期');to.setAttribute('aria-label','筛选结束日期');
     pick.type=clear.type='button';error.hidden=true;error.setAttribute('role','status');
-    wrap.append(fromLabel,from,toLabel,to,pick,clear,error);
+    fromLabel.className=toLabel.className='date-range-endpoint';fromLabel.append(from);toLabel.append(to);
+    const buttons=node('div',undefined,'date-range-buttons');buttons.append(pick,clear);
+    wrap.append(fromLabel,toLabel,buttons,error);
     let popup=null,observer=null,draftStart='',draftEnd='',hovered='',month='';
     const iso=date=>date.toISOString().slice(0,10),date=value=>new Date(value+'T12:00:00Z');
     const anchor=()=>((typeof today==='function'?today():today)||new Date().toLocaleDateString('sv-SE'));

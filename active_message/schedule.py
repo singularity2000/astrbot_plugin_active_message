@@ -75,12 +75,13 @@ def _day_intervals(day: datetime, sleep_ranges: list[tuple[int, int]], active_ra
 
 def choose_proactive_schedule(
     *, now: datetime, timezone_name: str, sleep_hours: str, active_hours: str,
-    attempts: int,
+    attempts: int, remaining_only: bool = False,
 ) -> list[datetime]:
     """按整天有效活跃时间分层随机抽样，只返回尚未过去的机会。
 
     每份在中间 60% 内独立随机取点，相邻份至少隔开一份时长的 40%；
     跨时段按有效秒数映射。中途启动不会把全天机会挤进剩余时间。
+    remaining_only 仅供用户手动重排：将指定数量重新分布到当天剩余活跃区间。
     """
     tz = get_timezone(timezone_name) if timezone_name else now.tzinfo or get_timezone("")
     now = now.astimezone(tz) if now.tzinfo is not None else now.replace(tzinfo=tz)
@@ -90,6 +91,9 @@ def choose_proactive_schedule(
     active_ranges = parse_time_ranges(active_hours)
     day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     intervals = _day_intervals(day, sleep_ranges, active_ranges)
+    if remaining_only:
+        cutoff = now.astimezone(timezone.utc)
+        intervals = [(max(start, cutoff), end) for start, end in intervals if end > cutoff]
     total = sum((end - start).total_seconds() for start, end in intervals)
     count = int(attempts)
     if count <= 0 or total <= 0:

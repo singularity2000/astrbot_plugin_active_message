@@ -106,7 +106,8 @@
       const targetSids=[...new Set(state.config.agenda.events.flatMap(e=>e.target_sids||[]))].filter(s=>!group||group.sids.includes(s)||group.sids.includes(s.split(':').slice(2).join(':')));targetSids.forEach(s=>sessionPicker.add(new Option(s,s)));sessionPicker.value=state.calendarSid||'';sessionPicker.onchange=()=>{state.calendarSid=sessionPicker.value;state.previewSeq++;previewSoon();};toolbar.append(sessionPicker);
       prev.onclick=()=>monthMove(-1);next.onclick=()=>monthMove(1);today.onclick=()=>{state.calendarMonth='';selected='';state.previewSeq++;previewSoon();};
       const monthPicker=el('input');monthPicker.type='month';monthPicker.min='1900-01';monthPicker.max='2199-12';monthPicker.value=calendar.month;monthPicker.setAttribute('aria-label','跳转日历月份');monthPicker.className='calendar-month-picker';monthPicker.onchange=()=>{if(!monthPicker.value||!monthPicker.validity.valid)return;state.calendarMonth=monthPicker.value;state.previewSeq++;selected='';heading.textContent=state.calendarMonth+' · 计算中…';previewSoon();};
-      toolbar.append(heading,monthPicker,prev,today,next);box.append(toolbar,el('p','日历预览 · '+calendar.timezone+' · '+(calendar.enabled?'日程功能已开启':'日程功能未开启，以下仅预览日程'),'muted'));
+      const navigation=el('div',undefined,'calendar-navigation');navigation.append(prev,today,next);
+      toolbar.append(heading,monthPicker,navigation);box.append(toolbar,el('p','日历预览 · '+calendar.timezone+' · '+(calendar.enabled?'日程功能已开启':'日程功能未开启，以下仅预览日程'),'muted'));
       if(calendar.errors?.length){box.append(el('p','日程或时间设置尚有错误，修正后才会计算日历。','warning'));return;}
       const grid=el('div',undefined,'calendar-grid');grid.setAttribute('aria-label',calendar.month+' 日历，周一至周日');
       weekdays.forEach(day=>grid.append(el('div',day,'calendar-weekday')));
@@ -136,7 +137,6 @@
         if(!group)box.append(field('outside_scope',state.schema.agenda.items.outside_scope,state.config.agenda,['agenda','outside_scope']));
         for(const key of ['preview_days','max_items'])box.append(group?field('agenda_'+key,gs['agenda_'+key],group,['agenda',key],true):field(key,state.schema.agenda.items[key],state.config.agenda,['agenda',key]));
         if(!group){const advanced=el('details',undefined,'agenda-guidance');advanced.append(el('summary','日程背景说明 · 所有会话共用'),field('background_description',state.schema.agenda.items.background_description,state.config.agenda,['agenda','background_description']));box.append(advanced);}
-        const actions=el('div',undefined,'actions'),add=el('button',group?'添加本组日程':'添加全局日程','primary');add.onclick=()=>edit();actions.append(add);box.append(actions);
         if(group)box.append(el('small','本组总览包含共享全局日程、本组日程及组内会话的专属日程；专属安排实际只交给对应 SID。','muted'));
         renderList(box);root.append(box);const current=el('div',undefined,'agenda-now');current.id='agenda-now';current.append(el('p','正在计算当前日程…'));root.append(current);
         const month=section('日历预览','按当前草稿显示日程，点击日期查看详情；不能直接在日历中改日程。请在上方列表中编辑，检查无误后点击“保存并生效”。');month.id='agenda-calendar';month.append(el('p','正在计算日历…','muted'));root.append(month);

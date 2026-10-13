@@ -1,7 +1,7 @@
 /* Card browsing is UI state; only explicit edits and batch actions change the draft. */
 (() => {
   'use strict';
-  const {node:el,dialog,helpTag,dateRangePicker}=window.ActiveMessageUI;
+  const {node:el,dialog,help,helpTag,dateRangePicker}=window.ActiveMessageUI;
   const statusNames={current:'进行中',upcoming:'待发生',expired:'已结束',unknown:'无法判断'};
   const defaults=()=>({keyword:'',status:'active',enabled:'',origin:'',repeat:'',effect:'',excluded:'',start:'',end:''});
   window.createAgendaListUI=({state,edit,describe,mark,previewSoon,persistPrefs,freshId})=>{
@@ -45,17 +45,18 @@
     }
     function makeControls(){
       controls=el('div',undefined,'agenda-browser-controls');
-      const top=el('div',undefined,'agenda-search-row'),search=el('input'),reset=el('button','重置'),advanced=el('details',undefined,'agenda-filters'),advancedTitle=el('summary','更多筛选');
+      const top=el('div',undefined,'agenda-search-row'),search=el('input'),reset=el('button','重置'),add=el('button',group?'添加本组日程':'添加全局日程','primary');
+      add.onclick=()=>edit();top.append(add);
       search.type='search';search.placeholder='搜索日程名称、说明或指定 SID';search.value=filters.keyword;search.setAttribute('aria-label','搜索日程');search.oninput=()=>changeFilter('keyword',search.value);
       top.append(search,choose('时间状态','status',[['active','当前及未来'],['current','进行中'],['upcoming','待发生'],['expired','已结束'],['unknown','无法判断'],['','全部']]));
       reset.onclick=()=>{resetBrowse();makeControls();draw();previewSoon();};
-      top.append(reset,helpTag('日程列表怎么用','搜索名称、说明或指定 SID；多个词用空格隔开，日程需要同时包含这些词。\n不同筛选条件需要同时满足。日期范围看这段时间内有没有安排，不是看日程从哪天开始；只填一端表示另一端不限。查看过去的一次性安排时，时间状态请选择“全部”或“已结束”。\n默认显示当前和未来安排；已停用、已排除是单独的状态。时间状态按最近一次预览和下方显示的时区计算，无法判断的记录默认保留。\n全选只选本页；翻页保留勾选，“跨页取消全部选择”清除所有页的勾选；更换搜索、筛选或会话组会清空勾选。\n每页可填 1～100 的整数，默认 15；删除后后面的日程向前补位，尽量留在原页。\n删除和本组排除只改草稿，右上角“保存并生效”后才用于运行。\n列表的筛选和分页不影响下方日历。','使用说明'));
+      top.append(reset,help('日程列表怎么用','搜索名称、说明或指定 SID；多个词用空格隔开，日程需要同时包含这些词。\n不同筛选条件需要同时满足。日期范围看这段时间内有没有安排，不是看日程从哪天开始；只填一端表示另一端不限。查看过去的一次性安排时，时间状态请选择“全部”或“已结束”。\n默认显示当前和未来安排；已停用、已排除是单独的状态。时间状态按最近一次预览和下方显示的时区计算，无法判断的记录默认保留。\n全选只选本页；翻页保留勾选，“跨页取消全部选择”清除所有页的勾选；更换搜索、筛选或会话组会清空勾选。\n每页可填 1～100 的整数，默认 15；删除后后面的日程向前补位，尽量留在原页。\n删除和本组排除只改草稿，右上角“保存并生效”后才用于运行。\n列表的筛选和分页不影响下方日历。'));
       const more=el('div',undefined,'agenda-filter-grid');
       more.append(choose('启用状态','enabled',[['','全部'],['true','已启用'],['false','已停用']]),choose('日程来源','origin',group?[['','全部'],['global','来自全局'],['local','本组新增'],['targeted','指定会话']]:[['','全部'],['global','共享全局'],['targeted','指定会话'],['orphaned','未关联会话组']]),choose('重复方式','repeat',[['','全部'],...['不重复','每天','每周','每年','Cron'].map(value=>[value,value])]),choose('行为影响','effect',[['','全部'],['none','仅提供背景'],['interjection','只暂停插话'],['proactive','只暂停主动聊天'],['both','两者都暂停']]));
       if(group)more.append(choose('本组继承','excluded',[['','全部'],['true','本组已排除'],['false','本组未排除']]));
       const dates=el('div',undefined,'agenda-filter-dates');dates.append(el('span','日期范围'),dateRangePicker({start:filters.start,end:filters.end,today:()=>metadata?.now.slice(0,10),onChange:dateChange}));more.append(dates);
-      advanced.append(advancedTitle,more);filterSummary=el('small',undefined,'agenda-filter-summary');
-      controls.append(top,advanced,filterSummary);summary=el('small',undefined,'agenda-result-summary');summary.setAttribute('role','status');summary.setAttribute('aria-live','polite');batch=el('div',undefined,'agenda-batch-actions');grid=el('div',undefined,'agenda-list');pager=el('div',undefined,'agenda-pagination');
+      filterSummary=el('small',undefined,'agenda-filter-summary');
+      controls.append(top,more,filterSummary);summary=el('small',undefined,'agenda-result-summary');summary.setAttribute('role','status');summary.setAttribute('aria-live','polite');batch=el('div',undefined,'agenda-batch-actions');grid=el('div',undefined,'agenda-list');pager=el('div',undefined,'agenda-pagination');
       host.replaceChildren(controls,summary,batch,grid,pager);
     }
     function selectedRows(kind){return rows().filter(row=>selected.has(row.event.id)&&(kind==='delete'?!row.inherited:row.inherited&&!row.excluded));}

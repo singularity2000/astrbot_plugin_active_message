@@ -4,6 +4,7 @@ from __future__ import annotations
 PLUGIN_VERSION = "1.4.0"
 
 import asyncio
+import hashlib
 import json
 import random
 import time
@@ -893,7 +894,7 @@ class ActiveMessagePlugin(Star):
         state = self.runtime.get(sid)
         now = self._now(sid)
         today = now.date().isoformat()
-        key = json.dumps([str(now.tzinfo), cfg.sleep_hours, cfg.active_hours, cfg.proactive_daily_limit], ensure_ascii=False)
+        key = self._schedule_key(sid, now)
         if state.proactive_schedule_date != today or state.proactive_schedule_key != key:
             history = ([row for row in state.proactive_schedule if row["status"] != "pending"]
                        if state.proactive_schedule_date == today else [])
@@ -905,6 +906,87 @@ class ActiveMessagePlugin(Star):
             state.proactive_schedule_date, state.proactive_schedule_key = today, key
             self.observer.log("debug", "PROACTIVE_SCHEDULED", sid=sid, opportunities=len(points), date=today)
         state.proactive_next_run = next((row["at"] for row in state.proactive_schedule if row["status"] == "pending"), None)
+
+    def _schedule_key(self, sid: str, now: datetime) -> str:
+        cfg = self._config_for(sid)
+        return json.dumps([str(now.tzinfo), cfg.sleep_hours, cfg.active_hours, cfg.proactive_daily_limit], ensure_ascii=False)
+
+    def proactive_reallocation(self, sid: str) -> dict[str, Any]:
+        """Read-only eligibility and a snapshot token; elapsed slots change the token too."""
+        now = self._now(sid)
+        today = now.date().isoformat()
+        cfg = self._config_for(sid)
+        state = self.runtime.sessions.get(sid)
+        rows = state.proactive_schedule if state else []
+        future = [row["at"] for row in rows if row["status"] == "pending"
+                  and datetime.fromisoformat(row["at"]).astimezone(now.tzinfo).date() == now.date()
+                  and datetime.fromisoformat(row["at"]).timestamp() > now.timestamp()]
+        key = self._schedule_key(sid, now)
+        revision = hashlib.sha256(json.dumps(
+            [today, key, rows, future], ensure_ascii=False, sort_keys=True,
+        ).encode()).hexdigest()
+        reason = ""
+        if not self._available() or not self._state_valid:
+            reason = "插件未开启或当前不可用，请先检查运行状态。"
+        elif not self.scopes.match(sid)[0] or not cfg.enabled or not cfg.proactive_enabled or not self._feature_valid(sid, "proactive"):
+            reason = "此会话的主动聊天未开启，或当前设置无效。"
+        elif not state or state.proactive_schedule_date != today or state.proactive_schedule_key != key:
+            reason = "当天预约尚未准备好，请稍后刷新。"
+        elif state.agent_active or sid in self._proactive_tasks or any(row["status"] == "running" for row in rows):
+            reason = "此会话正在处理任务，请结束后再重新分配。"
+        elif not future:
+            reason = "今天没有未来且尚未尝试的预约。"
+        else:
+            used = max(len(rows) - len(future), state.daily_proactive_sent if state.last_bot_date == today else 0)
+            if len(future) > max(0, cfg.proactive_daily_limit - used):
+                reason = "剩余预约与今日额度不一致，请刷新并检查运行状态。"
+        return {"date": today, "timezone": str(now.tzinfo), "count": len(future),
+                "revision": revision, "reason": reason}
+
+    async def redistribute_proactive(self, sid: str, revision: str) -> dict[str, Any]:
+        """Caller holds _settings_lock; finish the disk/memory commit on disconnect."""
+        task = asyncio.create_task(self._redistribute_proactive_transaction(sid, revision))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+    async def _redistribute_proactive_transaction(self, sid: str, revision: str) -> dict[str, Any]:
+        async with self._tick_lock, self._persist_lock:
+            snapshot = self.proactive_reallocation(sid)
+            if snapshot["revision"] != revision:
+                raise ValueError("预约已经变化，或有预约时间已到。请刷新后重新确认。")
+            if snapshot["reason"]:
+                raise ValueError(snapshot["reason"])
+            now = self._now(sid)
+            cfg = self._config_for(sid)
+            state = self.runtime.sessions[sid]
+            # Never revive elapsed, skipped, failed or completed opportunities.
+            retained = [row for row in state.proactive_schedule if row["status"] != "pending"
+                        or datetime.fromisoformat(row["at"]).timestamp() <= now.timestamp()
+                        or datetime.fromisoformat(row["at"]).astimezone(now.tzinfo).date() != now.date()]
+            count = len(state.proactive_schedule) - len(retained)
+            if count != snapshot["count"] or now.date().isoformat() != snapshot["date"]:
+                raise ValueError("预约时间已到或已经跨天，请刷新后重新确认。")
+            points = choose_proactive_schedule(now=now, timezone_name=cfg.timezone,
+                sleep_hours=cfg.sleep_hours, active_hours=cfg.active_hours, attempts=count, remaining_only=True)
+            if len(points) != count:
+                raise ValueError("今天没有足够的剩余活跃时间，原预约保持不变。")
+            rows = sorted(retained + [{"at": point.isoformat(), "status": "pending"} for point in points],
+                          key=lambda row: datetime.fromisoformat(row["at"]).timestamp())
+            next_run = next((row["at"] for row in rows if row["status"] == "pending"), None)
+            # Stage a standalone payload. Readers and the scheduler keep the old
+            # plan until the atomic disk write succeeds; failures need no rollback.
+            payload = self.runtime.dump()
+            payload["proactive_schedule_version"] = PROACTIVE_SCHEDULE_VERSION
+            payload["sessions"][sid].update(proactive_schedule=rows, proactive_next_run=next_run)
+            await self.state_file.save(payload)
+            state.proactive_schedule = rows
+            state.proactive_next_run = next_run
+            self._alarm.wake()
+            self.observer.log("info", "PROACTIVE_REALLOCATED", sid=sid, opportunities=count, date=snapshot["date"])
+            return {"sid": sid, "count": count, "date": snapshot["date"]}
 
     async def _run_proactive(self, sid: str, meta: dict[str, Any]) -> None:
         cfg = self._config_for(sid)

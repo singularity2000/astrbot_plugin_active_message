@@ -29,11 +29,11 @@ class PageAPI:
         self._prefs_lock = asyncio.Lock()
 
     def register(self):
-        for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences"):
+        for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences", "redistribute"):
             handler = getattr(self, name)
             self.handlers.append(handler)
             self.plugin.context.register_web_api(f"/{self.plugin.PLUGIN_ID}/{name}", handler,
-                ["POST"] if name in {"settings", "preview", "preferences"} else ["GET"], "主动会话运行检查台")
+                ["POST"] if name in {"settings", "preview", "preferences", "redistribute"} else ["GET"], "主动会话运行检查台")
 
     def unregister(self):
         registry = self.plugin.context.registered_web_apis
@@ -138,6 +138,7 @@ class PageAPI:
                     "schedule_date":state.proactive_schedule_date if scheduled else today,
                     "schedule":state.proactive_schedule if scheduled and sid == schedule_sid and state.proactive_schedule_date == today else [],
                     "schedule_timezone":str(now.tzinfo),
+                    "reallocation":p.proactive_reallocation(sid) if sid == schedule_sid else None,
                     "latest":p.observer.latest.get(sid), "errors":entry.errors})
             errors = p.settings.blocking_errors()
             if not p._state_valid:
@@ -245,6 +246,26 @@ class PageAPI:
                 result["calendar"]["timezone_note"] = "未单独设置时区时，以本组首个 SID 的框架时区预览；实际各会话使用自己的时区。" if index >= 0 else "未单独设置时区时，以框架默认时区预览。"
             return self._response(result)
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
+
+    async def redistribute(self):
+        try:
+            data = await self._body()
+            sid, revision = data.get("sid"), data.get("schedule_revision")
+            if not isinstance(sid, str) or not isinstance(revision, str) or not revision:
+                raise ValueError("缺少会话或预约信息，请刷新后重试。")
+            from .sessions import split_sid
+            split_sid(sid)
+            async with self.plugin._settings_lock:
+                await self.plugin.agenda_store.check_current()
+                if data.get("revision") != self.revision():
+                    raise ValueError("设置或日程已经变更，请重新载入后再重新分配。")
+                result = await self.plugin.redistribute_proactive(sid, revision)
+            return self._response(result)
+        except (ValueError, PermissionError) as exc:
+            return self._response(error=str(exc))
+        except Exception as exc:
+            self.plugin.observer.error("PROACTIVE_REALLOCATION_FAILED", exc)
+            return self._response(error="重新分配未完成，请刷新确认当前预约，并检查插件日志。")
 
     async def settings(self):
         try:
