@@ -110,13 +110,10 @@ class PluginConfig:
     decision: DecisionConfig
     activation_prompts: tuple[str, ...]
     proactive_enabled: bool
-    proactive_min_interval_minutes: int
-    proactive_max_interval_minutes: int
     proactive_daily_limit: int
     timezone: str
     sleep_hours: str
     active_hours: str
-    active_interval_multiplier: float
     proactive_prompts: tuple[str, ...]
     groups: tuple[SessionGroup, ...]
     history_messages: int = 20
@@ -142,6 +139,7 @@ class PluginConfig:
         energy = _as_dict(interjection.get("energy"))
         decision = _as_dict(interjection.get("decision"))
         proactive = _as_dict(root.get("proactive_chat"))
+        routine = _as_dict(root.get("routine"))
 
         groups: list[SessionGroup] = []
         raw_groups = root.get("session_groups", [])
@@ -220,26 +218,17 @@ class PluginConfig:
                 "请以当前会话的人格和历史为依据，自然地参与刚才的群聊。你是被插件判断为可能适合发言，但不要提及内部判断、分数或插件；如果没有自然的回应，就保持克制。触发类型：{trigger_type}。当前消息：{current_message}。判断理由：{decision_reason}。",
             ),
             proactive_enabled=_bool(proactive.get("enabled"), False),
-            proactive_min_interval_minutes=_int(
-                proactive.get("min_interval_minutes"), 30, 1
-            ),
-            proactive_max_interval_minutes=_int(
-                proactive.get("max_interval_minutes"), 180, 1
-            ),
             proactive_daily_limit=_int(proactive.get("daily_limit"), 3, 1),
-            timezone=_text(proactive.get("timezone"), ""),
-            sleep_hours=_text(proactive.get("sleep_hours"), "23:00-07:00"),
-            active_hours=_text(proactive.get("active_hours"), "08:00-22:00"),
-            active_interval_multiplier=max(
-                0.1, _float(proactive.get("active_interval_multiplier"), 0.6)
-            ),
+            timezone=_text(routine.get("timezone"), ""),
+            sleep_hours=_text(routine.get("sleep_hours"), "23:00-07:00"),
+            active_hours=_text(routine.get("active_hours"), "08:00-22:00"),
             proactive_prompts=tuple(
                 value.strip()
                 for value in proactive_prompts
                 if isinstance(value, str) and value.strip()
             )
             or (
-                "请像一个真实的聊天伙伴一样，自然地开启一段轻松对话。不要提及定时任务、插件或内部提示；如果现在不适合打扰，就不要发送消息。当前心情：{mood}。",
+                "请像一个真实的聊天伙伴一样，自然地开启一段轻松对话。不要提及定时任务、插件或内部提示；如果现在不适合打扰，就不要发送消息。当前作息：{mood}。",
             ),
             groups=tuple(groups),
             debounce_max_seconds=_float(interjection.get("debounce_max_seconds"), 10),

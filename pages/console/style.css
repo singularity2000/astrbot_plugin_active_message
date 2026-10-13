@@ -24,6 +24,8 @@
   --teal:#167b80;
   --warning:#8b5a11;
   --warning-bg:#fff5df;
+  --success:#176947;
+  --success-bg:#e9f5ef;
   --override:#a65f08;
   --override-soft:#fff0d2;
   --danger:#ac3449;
@@ -57,6 +59,8 @@
   --teal:#82d8cf;
   --warning:#ffcf83;
   --warning-bg:#493b28;
+  --success:#95dfb8;
+  --success-bg:#253f35;
   --override:#ffbd5b;
   --override-soft:#42311d;
   --danger:#ffa0b1;
@@ -1508,3 +1512,32 @@ input[type=checkbox].capsule-switch:checked::before { left:23px; background:var(
   .agenda-filter-dates>span { display:block; margin-bottom:5px; }
   .date-range-control>input { width:calc(50% - 26px); }
 }
+
+/* 预约竖线与现在标记分层；状态同时提供文字，避免只靠颜色。 */
+.schedule-plan-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; margin:6px 0 12px; }
+.schedule-plan-toolbar label { display:flex; align-items:center; gap:6px; flex:1 1 220px; min-width:0; font-size:12px; }
+.schedule-plan-toolbar select { flex:1; width:0; min-width:0; max-width:560px; font-size:12px; padding:4px 6px; }
+.schedule-plan-toolbar>small { color:var(--muted); }
+.schedule-slot { position:absolute; top:0; height:30px; width:12px; min-width:0; padding:0; margin:0; transform:translateX(-50%); border:0; background:transparent; border-radius:0; z-index:2; }
+.schedule-slot::after { content:''; position:absolute; left:5px; top:1px; bottom:1px; width:2px; background:var(--warning); box-shadow:0 0 0 1px var(--surface); }
+.schedule-slot[data-status=sent]::after { background:var(--success); }
+.schedule-slot[data-status=running]::after { background:var(--accent); width:3px; }
+.schedule-slot[data-status=failed]::after { background:var(--danger); }
+.schedule-slot[data-status=missed]::after,.schedule-slot[data-status=skipped]::after,.schedule-slot[data-status=quiet]::after { background:var(--muted); opacity:.65; }
+.schedule-slot:hover,.schedule-slot:focus-visible { background:var(--accent-soft); outline:1px solid var(--accent); z-index:3; }
+.schedule-now { z-index:4; }
+.schedule-slot-detail { font-size:12px; color:var(--muted); min-height:22px; margin:5px 0 0; }
+.schedule-legend>.planned::before { width:2px; border:0; border-radius:0; background:var(--warning); margin-inline:4px; }
+.trace-key { display:flex; flex-wrap:wrap; gap:5px; margin:0 0 10px; }
+.trace-badge { display:inline-block; font-size:11px; font-weight:600; padding:1px 5px; border-radius:3px; line-height:1.7; }
+.trace-badge[data-tone=decision],.trace-badge[data-tone=warning] { color:var(--warning); background:var(--warning-bg); }
+.trace-badge[data-tone=success] { color:var(--success); background:var(--success-bg); }
+.trace-badge[data-tone=error] { color:var(--danger); background:var(--surface-2); }
+.trace-steps .step { display:flex; flex-wrap:wrap; align-items:baseline; gap:3px 7px; border-left:3px solid transparent; padding:10px 8px; }
+.step-number { flex:none; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+.step-title { flex:1 1 100px; min-width:0; }
+.trace-steps .step[data-tone=decision],.trace-steps .step[data-tone=warning] { border-left-color:var(--warning); }
+.trace-steps .step[data-tone=success] { border-left-color:var(--success); }
+.trace-steps .step[data-tone=error] { border-left-color:var(--danger); }
+.trace-steps .step.active { box-shadow:none; outline:1px solid var(--accent); outline-offset:-1px; }
+.trace-more { width:100%; margin-top:10px; font-size:12px; }

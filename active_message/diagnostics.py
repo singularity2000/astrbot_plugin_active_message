@@ -90,7 +90,7 @@ class TraceStore:
                 break
         return "".join(chunks)
 
-    def add(self, run_id, label, data=None, *, raw=False, terminal=False):
+    def add(self, run_id, label, data=None, *, raw=False, terminal=False, key=None, tone="neutral"):
         self._prune()
         run = self.runs.get(run_id)
         if run is None and terminal:
@@ -99,24 +99,36 @@ class TraceStore:
                 self.runs[run_id] = run
                 self.sizes[run_id] = 512
         if not run: return
-        if len(run["steps"]) >= (100 if terminal else 97):
+        existing = next((i for i, step in enumerate(run["steps"]) if step.get("key") == key), None) if key else None
+        previous = run["steps"][existing] if existing is not None else None
+        previous_size = len(json.dumps(previous, ensure_ascii=False).encode("utf-8")) + 128 if previous else 0
+        if previous:
+            if isinstance(previous.get("data"), dict) and isinstance(data, dict):
+                data = {**previous["data"], **data}
+            if tone == "neutral":
+                tone = previous.get("tone", tone)
+        if existing is None and len(run["steps"]) >= (1000 if terminal else 997):
             run["steps_omitted"] = run.get("steps_omitted", 0) + 1
             if not terminal:
                 return
             # Preserve the final failure/summary even after a long tool loop.
             removed = run["steps"].pop()
             self.sizes[run_id] -= len(json.dumps(removed, ensure_ascii=False).encode("utf-8")) + 128
-        step = {"label":label, "at":time.time(), "raw":raw}
+        step = {"label":label, "at":previous["at"] if previous else time.time(), "raw":raw,
+                "tone":tone, "key":key, "updated_at":time.time()}
         text = self._safe_json(data)
         shortened = len(text) > self.max_step_chars
         safe_data = {"preview": text[:self.max_step_chars], "shortened": True, "projected_chars_at_least": len(text)} if shortened else json.loads(text)
         size = len(json.dumps(safe_data, ensure_ascii=False).encode("utf-8"))
-        if size + self.sizes.get(run_id, 0) + 512 > self.budget:
+        if size + self.sizes.get(run_id, 0) - previous_size + 512 > self.budget:
             step.update(state="超过容量，未保留正文", bytes=size)
         else:
             step.update(state="文字预览已缩减" if shortened else "已记录文字（媒体编码与已知凭据已隐藏）", data=safe_data)
-        run["steps"].append(step)
-        self.sizes[run_id] += len(json.dumps(step, ensure_ascii=False).encode("utf-8")) + 128
+        if existing is None:
+            run["steps"].append(step)
+        else:
+            run["steps"][existing] = step
+        self.sizes[run_id] += len(json.dumps(step, ensure_ascii=False).encode("utf-8")) + 128 - previous_size
         self._prune()
 
     def finish(self, run_id, status):
@@ -169,7 +181,8 @@ MESSAGES = {
     "MODEL_RETRY": "遇到临时故障，按本轮超时与重试设置等待重试。",
     "INPUT_TOO_LARGE": "历史已缩减，但固定提示词或当前输入仍超预算；请缩短提示词或合理调整判断预算。",
     "PAGE_PREFERENCES_FAILED": "界面偏好存储失败，不影响运行配置。",
-    "CONFIG_APPLIED": "配置已保存并生效，待执行计划已重新安排。",
+    "CONFIG_APPLIED": "配置已保存并生效，聊天预约按生效的作息与额度安排。",
+    "CONFIG_DEFAULTED": "部分配置格式不兼容，已使用当前默认值；请在配置页确认。",
     "DIAGNOSTIC_CAPTURE_FAILED": "本次诊断快照未能保存；不影响发言流程，不会用摘要冒充全文。",
     "PAGE_READ_FAILED": "运行检查台读取失败，请检查页面接口与 Provider 状态。",
     "CONFIG_SAVE_FAILED": "配置保存失败，未切换运行配置；请刷新页面并检查日志。",
@@ -197,14 +210,15 @@ MESSAGES = {
     "AGENT_DONE": "原生 Agent 已结束；是否发送以 MESSAGE_SENT 为准。",
     "MESSAGE_SENT": "已确认一次发送成功；主动任务本轮消耗一次额度，分段发送不重复计数。",
     "ACTIVATION_PROMPT_INJECTED": "激活指令已注入，外部文本在用户层作为参考资料传递。",
-    "PROACTIVE_SCHEDULED": "已安排下次主动聊天时间；只有最早的待执行计划会设置闹钟。",
+    "PROACTIVE_SCHEDULED": "已安排今天的随机聊天机会；实际运行仍需满足作息、冷却和会话条件。",
     "PROACTIVE_SKIPPED": "本次主动机会未满足作息、上限、冷却、会话或平台条件，已跳过。",
     "PROACTIVE_SEND_SKIPPED": "发送前检查决定放弃本次发送；这是业务限制，不代表模型调用失败。",
     "PROACTIVE_NO_SEND": "本轮尚未确认发送；是否消耗每日额度以整轮最终结果为准。",
     "PROACTIVE_QUOTA_USED": "本轮正常完成但未发送，已消耗一次主动尝试额度；发言冷却和无人回复数不变。",
-    "PROACTIVE_RUN_FAILED": "主动聊天执行失败或超时；已发送内容不会撤回，将重新安排下次机会。",
+    "PROACTIVE_RUN_FAILED": "主动聊天执行失败或超时；本次机会结束，已发送内容保留。",
     "PROACTIVE_TIMEOUT": "主动聊天达到整轮时间上限；请查看停留阶段、各阶段耗时和最近一次模型／工具结果。",
     "PROACTIVE_PROGRESS": "主动聊天执行阶段已更新。",
+    "PROACTIVE_HOOK_FAILED": "本次处理步骤发生异常；整轮结果请查看结束摘要。",
     "PROACTIVE_LLM_STARTED": "开始调用原生聊天模型；此耗时包含 Provider 内部重试。",
     "PROACTIVE_LLM_FINISHED": "本次原生模型调用已返回。",
     "PROACTIVE_LLM_ATTEMPT_ERROR": "本次模型尝试未成功；本轮结果待主框架确认，框架仍可能重试或切换备用模型。",
@@ -239,7 +253,7 @@ class Observability:
         self._emitted: dict[tuple, tuple[float, int]] = {}
 
     def log(self, level: str, code: str, **fields: Any) -> None:
-        record = {"code": code, "message": MESSAGES.get(code, code), **fields}
+        record = {"code": code, "level": level, "message": MESSAGES.get(code, code), **fields}
         if self.sink is not None:
             self.sink(record)
         sid = fields.get("sid")

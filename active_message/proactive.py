@@ -63,6 +63,9 @@ class SessionBoundSendTool(FunctionTool):
         if not session_allows_plugin(self.plugin.context, self.sid, self.plugin.PLUGIN_ID):
             return "主框架已禁止本会话使用插件或 LLM"
         now = self.plugin._now(self.sid)
+        meta = event.get_extra("_active_message_meta", {})
+        if self.feature == "proactive" and meta.get("scheduled_date", now.date().isoformat()) != now.date().isoformat():
+            return "这次预约属于前一天，已经结束"
         agenda_reason = self.plugin._agenda_block(self.sid, self.feature)
         if agenda_reason:
             return "自主发言已暂停：" + agenda_reason
@@ -162,6 +165,9 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
     progress.enter("session_lock")
     async with session_lock_manager.acquire_lock(sid):
         progress.enter("checks")
+        if meta.get("scheduled_date", plugin._now(sid).date().isoformat()) != plugin._now(sid).date().isoformat():
+            progress.outcome = "跳过：这次预约属于前一天"
+            return
         if not plugin.proactive_allowed_now(sid) or not session_allows_plugin(context, sid, plugin.PLUGIN_ID):
             progress.outcome = "跳过：运行条件已变化"
             plugin.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid, run_id=meta["run_id"])
@@ -495,7 +501,11 @@ class _ObservedHooks(_Delegate):
     async def _call(self, name: str, *args: Any) -> None:
         self.progress.check_deadline()
         self.progress.enter("agent_hooks", hook=name)
-        await getattr(self.original, name)(*args)
+        try:
+            await getattr(self.original, name)(*args)
+        except Exception as exc:
+            self.progress.failure("PROACTIVE_HOOK_FAILED", exc, hook=name)
+            raise
         self.progress.check_deadline()
         self.progress.enter("agent")
 

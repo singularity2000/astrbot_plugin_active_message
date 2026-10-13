@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from datetime import datetime
 from typing import Any
 
 from .config import PluginConfig
@@ -71,6 +72,8 @@ class RuntimeStore:
         调用方负责保证一轮只计一次。
         """
         state = self.get(sid)
+        if state.last_bot_date and date < state.last_bot_date:
+            return
         if state.last_bot_date != date:
             state.last_bot_date = date
             state.daily_proactive_sent = 0
@@ -101,6 +104,9 @@ class RuntimeStore:
                     "daily_proactive_sent": state.daily_proactive_sent,
                     "proactive_next_run": state.proactive_next_run,
                     "proactive_run_id": state.proactive_run_id,
+                    "proactive_schedule_date": state.proactive_schedule_date,
+                    "proactive_schedule": state.proactive_schedule,
+                    "proactive_schedule_key": state.proactive_schedule_key,
                     "unreplied_count": self.unreplied.get(sid, 0),
                 }
                 for sid, state in self.sessions.items()
@@ -133,9 +139,29 @@ class RuntimeStore:
                     state.recent_bot_timestamps = [float(v) for v in raw_ts if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)][-max_recent_messages:]
                 state.last_bot_date = str(values.get("last_bot_date", ""))
                 state.daily_proactive_sent = max(0, int(values.get("daily_proactive_sent", 0)))
-                for key in ("proactive_next_run", "proactive_run_id"):
+                for key in ("proactive_next_run", "proactive_run_id", "proactive_schedule_date", "proactive_schedule_key"):
                     value = values.get(key)
-                    setattr(state, key, value if isinstance(value, str) else None)
+                    setattr(state, key, value if isinstance(value, str) else "" if key in {"proactive_schedule_date", "proactive_schedule_key"} else None)
+                state.proactive_schedule.clear()
+                raw_schedule = values.get("proactive_schedule", [])
+                if isinstance(raw_schedule, list):
+                    for row in raw_schedule[:1000]:
+                        if not isinstance(row, dict) or row.get("status") not in {"pending", "running", "sent", "quiet", "failed", "skipped", "missed"}:
+                            continue
+                        try:
+                            point = datetime.fromisoformat(row.get("at", ""))
+                        except (TypeError, ValueError):
+                            continue
+                        if point.tzinfo is None:
+                            continue
+                        restored = {"at": point.isoformat(), "status": row["status"]}
+                        if isinstance(row.get("reason"), str):
+                            restored["reason"] = row["reason"][:500]
+                        if restored["status"] == "running":
+                            restored["status"] = "missed"
+                        elif restored["status"] == "pending" and point.timestamp() <= time.time():
+                            restored["status"] = "missed"
+                        state.proactive_schedule.append(restored)
                 self.unreplied[sid] = max(0, int(values.get("unreplied_count", 0)))
             except (ValueError, TypeError, OverflowError):
                 continue

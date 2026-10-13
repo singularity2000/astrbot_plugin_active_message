@@ -52,19 +52,44 @@ def shape_errors(raw, fields, prefix=""):
     return errors
 
 
-def fill_defaults(raw, fields):
+def fill_defaults(raw, fields, *, resets=None, prefix=""):
+    """Read current fields only; incompatible shapes use their schema defaults."""
+    if resets is not None and not isinstance(raw, dict):
+        resets.append(prefix.rstrip(".") or "config")
     raw = raw if isinstance(raw, dict) else {}
     output = {}
     for key, spec in fields.items():
+        path = prefix + key
         if spec["type"] == "object":
-            output[key] = fill_defaults(raw.get(key, {}), spec["items"])
+            output[key] = fill_defaults(raw.get(key, {}), spec["items"], resets=resets, prefix=path + ".")
         elif spec["type"] == "template_list":
             items = raw.get(key, [])
             template = next(iter(spec["templates"]))
-            output[key] = [fill_defaults(item, spec["templates"][template]["items"]) | {"__template_key": template}
-                           for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+            if not isinstance(items, list):
+                if resets is not None:
+                    resets.append(path)
+                items = []
+            output[key] = []
+            for index, item in enumerate(items):
+                item_path = f"{path}[{index}]"
+                if not isinstance(item, dict) or item.get("__template_key", template) not in spec["templates"]:
+                    if resets is not None:
+                        resets.append(item_path)
+                    item = {}
+                item_template = item.get("__template_key", template)
+                output[key].append(fill_defaults(item, spec["templates"][item_template]["items"],
+                                                  resets=resets, prefix=item_path + ".") | {"__template_key": item_template})
         else:
-            output[key] = copy.deepcopy(raw.get(key, spec.get("default")))
+            value = raw.get(key, spec.get("default"))
+            kind = spec["type"]
+            compatible = (isinstance(value, bool) if kind == "bool" else
+                          isinstance(value, list) and all(isinstance(v, str) for v in value) if kind == "list" else
+                          isinstance(value, (str, int, float)) and not isinstance(value, bool))
+            if not compatible:
+                if resets is not None and key in raw:
+                    resets.append(path)
+                value = spec.get("default")
+            output[key] = copy.deepcopy(value)
     return output
 
 
@@ -116,9 +141,22 @@ class Settings:
         self.agenda_revision: str | None = None
         self.config_revision: str | None = None
         self.schema = schema()
-        self.shape_errors = shape_errors(raw, self.schema)
-        self.raw = fill_defaults(raw, self.schema)
-        self.warnings = []
+        problems = shape_errors(raw, self.schema)
+        resets = []
+        self.raw = fill_defaults(raw, self.schema, resets=resets)
+        self.shape_errors = [(path, hint) for path, hint in problems
+                             if path.startswith("agenda.events") or not any(
+                                 path == reset or path.startswith(reset + ".") or path.startswith(reset + "[")
+                                 for reset in resets)]
+        self.warnings = [{"code": "CONFIG_DEFAULTED", "group_index": None,
+                          "message": "配置项 " + path + " 的格式与当前要求不符，已使用默认值。"}
+                         for path in resets if not path.startswith("agenda.events")]
+        if any(path == "session_groups" or path.endswith(".sids") or
+               re.fullmatch(r"session_groups\[\d+\]", path) for path in resets):
+            # Falling back to an empty whitelist must not enable every session.
+            self.raw["enabled"] = self.schema["enabled"]["default"]
+            self.warnings.append({"code": "CONFIG_DEFAULTED", "group_index": None,
+                                  "message": "会话范围的格式不兼容，插件总开关已使用默认的关闭状态；请确认会话范围后开启。"})
         # 两个配置入口共用这里的规范化；只去除同组重复，不擅自改变跨组归属。
         for index, group in enumerate(self.raw["session_groups"]):
             values = group.get("sids", [])
@@ -184,6 +222,7 @@ class Settings:
                 overlay(merged["interjection"][section], item.get("interjection_" + section, {}),
                         self.schema["interjection"]["items"][section]["items"])
             overlay(merged["proactive_chat"], pro, self.schema["proactive_chat"]["items"])
+            overlay(merged["routine"], item.get("routine_overrides", {}), self.schema["routine"]["items"])
             overlay(merged["context"], item.get("context_overrides", {}), self.schema["context"]["items"])
             if not blank(item.get("threshold_override")):
                 overlay(merged["interjection"], {"threshold": item["threshold_override"]}, self.schema["interjection"]["items"])
@@ -312,9 +351,10 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
         except (ValueError, KeyError, TypeError, RuntimeError, DecisionError):
             errors[section].append((path, hint))
     if config.interjection_enabled or config.proactive_enabled:
-        check("shared", "proactive_chat.timezone", lambda: get_timezone(config.timezone), "请输入有效 IANA 时区，例如 Asia/Shanghai。")
-        check("shared", "proactive_chat.sleep_hours", lambda: parse_time_ranges(config.sleep_hours),
-              "睡眠时段格式应为 HH:MM-HH:MM；多个时段使用英文逗号分隔。")
+        check("shared", "routine.timezone", lambda: get_timezone(config.timezone), "请输入有效 IANA 时区，例如 Asia/Shanghai。")
+        for key in ("sleep_hours", "active_hours"):
+            check("shared", "routine." + key, lambda k=key: parse_time_ranges(getattr(config, k)),
+                  "时段格式应为 HH:MM-HH:MM；多个时段使用英文逗号分隔。")
         if config.missing_group_history not in {"skip", "runtime"}:
             errors["shared"].append(("context.missing_group_history", "请选择 skip 或 runtime。"))
     if config.interjection_enabled:
@@ -346,12 +386,6 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
                       lambda k=key: validate_template(getattr(decision, k), decision=True),
                       "存在未知占位符，或引用了判断完成后才有的分数、理由。")
     if config.proactive_enabled:
-        check("proactive", "proactive_chat.timezone", lambda: get_timezone(config.timezone), "请输入有效 IANA 时区，例如 Asia/Shanghai。")
-        for key in ("sleep_hours", "active_hours"):
-            check("proactive", "proactive_chat." + key, lambda k=key: parse_time_ranges(getattr(config, k)),
-                  "格式应为 HH:MM-HH:MM；多个时段使用英文逗号分隔。")
-        if config.proactive_min_interval_minutes > config.proactive_max_interval_minutes:
-            errors["proactive"].append(("proactive_chat.min_interval_minutes", "最短间隔不能大于最长间隔。"))
         for index, prompt in enumerate(config.proactive_prompts):
             check("proactive", f"proactive_chat.prompts[{index}]", lambda p=prompt: validate_template(p), "存在未知占位符，请对照 README。")
         check("proactive", "proactive_chat.task_prompt", lambda: validate_template(config.proactive_task_prompt), "存在未知占位符，请对照 README。")
@@ -372,8 +406,7 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
                           ("interjection", "interjection.decision.retry_delay_seconds", 0, None, False)]
         if config.proactive_enabled:
             rules += [("proactive", "proactive_chat." + key, low, high, integer) for key, low, high, integer in [
-                ("min_interval_minutes", 1, None, True), ("max_interval_minutes", 1, None, True),
-                ("daily_limit", 1, None, True), ("active_interval_multiplier", .1, 1, False)]]
+                ("daily_limit", 1, 1000, True)]]
             rules += [("proactive", "runtime.proactive_concurrency", 1, None, True),
                       ("proactive", "runtime.proactive_timeout_seconds", 1, None, True)]
         if config.interjection_enabled or config.proactive_enabled:

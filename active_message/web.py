@@ -111,7 +111,8 @@ class PageAPI:
 
     async def status(self):
         try:
-            self._auth()
+            request = self._auth()
+            schedule_sid = str(request.query.get("schedule_sid", ""))
             p = self.plugin
             sessions = []
             targets = set(p.runtime.sessions) | set(p.scopes.targets(p.runtime.sessions))
@@ -119,10 +120,14 @@ class PageAPI:
                 state = p.runtime.sessions.get(sid)
                 entry = p._entry_for(sid)
                 matched, group = p.scopes.match(sid)
+                group_index = next((i for i, item in enumerate(p.plugin_config.groups) if item is group), None)
                 cfg = entry.config
-                today = p._now(sid).date().isoformat()
+                now = p._now(sid)
+                today = now.date().isoformat()
+                scheduled = bool(state and matched and cfg.enabled and cfg.proactive_enabled and entry.valid("proactive") and p._available())
                 sessions.append({"sid":sid, "group":group.name if group else "全局", "matched":matched,
-                    "group_index":next((i for i, item in enumerate(p.plugin_config.groups) if item is group), None),
+                    "group_id":p.settings.raw["session_groups"][group_index]["agenda_id"] if group_index is not None else None,
+                    "group_index":group_index,
                     "interjection":matched and cfg.enabled and cfg.interjection_enabled and entry.valid("interjection"),
                     "proactive":matched and cfg.enabled and cfg.proactive_enabled and entry.valid("proactive"),
                     "threshold":cfg.threshold, "agent_active":bool(state and state.agent_active),
@@ -130,6 +135,9 @@ class PageAPI:
                     "daily_limit":cfg.proactive_daily_limit,
                     "cooldown_remaining":max(0, round(cfg.cooldown_seconds-(time.time()-state.last_bot_at))) if state and state.last_bot_at else 0,
                     "next_run":state.proactive_next_run if state and matched and cfg.enabled and cfg.proactive_enabled and entry.valid("proactive") else None,
+                    "schedule_date":state.proactive_schedule_date if scheduled else today,
+                    "schedule":state.proactive_schedule if scheduled and sid == schedule_sid and state.proactive_schedule_date == today else [],
+                    "schedule_timezone":str(now.tzinfo),
                     "latest":p.observer.latest.get(sid), "errors":entry.errors})
             errors = p.settings.blocking_errors()
             if not p._state_valid:

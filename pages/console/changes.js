@@ -10,9 +10,8 @@
     const keys=Object.keys(a).filter(k=>!internal(k)),other=Object.keys(b).filter(k=>!internal(k));
     return keys.length===other.length&&keys.every(k=>Object.hasOwn(b,k)&&equal(a[k],b[k]));
   }
-  const clocks=new Set(['timezone','sleep_hours','active_hours','active_interval_multiplier']);
-  const groupSections={interjection_mode:'智能插话',threshold_override:'智能插话',decision_mode:'智能插话',interjection_overrides:'智能插话',decision_overrides:'智能插话',interjection_weights:'智能插话',interjection_activity:'智能插话',interjection_energy:'智能插话',cooldown_override:'会话组',proactive_mode:'主动聊天',context_overrides:'上下文与诊断',agenda_mode:'作息与日程',agenda_exclusions:'作息与日程',agenda_preview_days:'作息与日程',agenda_max_items:'作息与日程'};
-  const globalSections={enabled:'运行总览',interjection:'智能插话',activation_prompts:'智能插话',context:'上下文与诊断',diagnostics:'上下文与诊断',runtime:'上下文与诊断'};
+  const groupSections={interjection_mode:'智能插话',threshold_override:'智能插话',decision_mode:'智能插话',interjection_overrides:'智能插话',decision_overrides:'智能插话',interjection_weights:'智能插话',interjection_activity:'智能插话',interjection_energy:'智能插话',cooldown_override:'会话组',proactive_mode:'主动聊天',routine_overrides:'作息与日程',context_overrides:'上下文与诊断',agenda_mode:'作息与日程',agenda_exclusions:'作息与日程',agenda_preview_days:'作息与日程',agenda_max_items:'作息与日程'};
+  const globalSections={routine:'作息与日程',enabled:'运行总览',interjection:'智能插话',activation_prompts:'智能插话',context:'上下文与诊断',diagnostics:'上下文与诊断',runtime:'上下文与诊断'};
   function createTracker(){
     let baseline=null,groupIds=new WeakMap(),baseGroups=[],baseByKey=new Map(),serial=0;
     function reset(current,saved){
@@ -57,7 +56,7 @@
           const meta=schema[key]||{};
           if(key==='proactive_chat'){
             for(const field of new Set([...Object.keys(saved[key]||{}),...Object.keys(current[key]||{})])){
-              if(!equal(saved[key]?.[field],current[key]?.[field]))add(['全局',clocks.has(field)?'作息与日程':'主动聊天',meta.items?.[field]?.description||field]);
+              if(!equal(saved[key]?.[field],current[key]?.[field]))add(['全局','主动聊天',meta.items?.[field]?.description||field]);
             }
           }else if(meta.type==='object')walk(saved[key],current[key],meta.items,['全局',globalSections[key]||meta.description||key,...(['context','diagnostics','runtime'].includes(key)?[meta.description||key]:[])]);
           else add(['全局',globalSections[key]||'',meta.description||key]);
@@ -74,7 +73,7 @@
               const meta=groupFields[key]||{};
               if(key==='proactive_overrides'){
                 for(const field of new Set([...Object.keys(before[key]||{}),...Object.keys(after[key]||{})])){
-                  if(!equal(before[key]?.[field],after[key]?.[field]))add([name,clocks.has(field)?'作息与日程':'主动聊天',meta.items?.[field]?.description||field]);
+                  if(!equal(before[key]?.[field],after[key]?.[field]))add([name,'主动聊天',meta.items?.[field]?.description||field]);
                 }
               }else if(meta.type==='object')walk(before[key],after[key],meta.items,[name,groupSections[key]||'会话组',...(['interjection_weights','interjection_activity','interjection_energy'].includes(key)?[meta.description||key]:[])]);
               else add([name,groupSections[key]||'会话组',meta.description||key]);

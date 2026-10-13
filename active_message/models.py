@@ -87,6 +87,9 @@ class SessionRuntimeState:
     agent_active: bool = False
     proactive_next_run: str | None = None
     proactive_run_id: str | None = None
+    proactive_schedule_date: str = ""
+    proactive_schedule: list[dict[str, str]] = field(default_factory=list)
+    proactive_schedule_key: str = ""
 
     def ensure_lock(self) -> Any:
         if self.evaluation_lock is None:

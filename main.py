@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.3.1"
+PLUGIN_VERSION = "1.4.0"
 
 import asyncio
 import json
@@ -9,7 +9,7 @@ import random
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from astrbot.api import ToolSet, logger as fallback_logger
@@ -37,7 +37,7 @@ from .active_message.prompts import make_values, render_system_template
 from .active_message.runtime import RuntimeStore
 from .active_message.storage import JsonStateFile
 from .active_message.schedule import (
-    DeadlineAlarm, PROACTIVE_SCHEDULE_VERSION, choose_proactive_run_at,
+    DeadlineAlarm, PROACTIVE_SCHEDULE_VERSION, choose_proactive_schedule,
     current_mood, get_timezone, in_time_ranges, parse_time_ranges,
 )
 from .active_message.scoring import build_score_breakdown, calculate_activity_score, calculate_energy_score, exceeds_threshold
@@ -117,6 +117,8 @@ class ActiveMessagePlugin(Star):
         cfg = self._config_for(sid)
         if in_time_ranges(self._now(sid), parse_time_ranges(cfg.sleep_hours)):
             return "当前处于睡眠时段，暂停智能插话和主动聊天。"
+        if feature == "proactive" and not in_time_ranges(self._now(sid), parse_time_ranges(cfg.active_hours)):
+            return "当前处于正常时段，只允许智能插话。"
         agenda = self._entry_for(sid).agenda
         if not agenda.enabled:
             return ""
@@ -188,9 +190,9 @@ class ActiveMessagePlugin(Star):
             event.set_extra("_active_message_agenda_injected", True)
             return
 
-    def _capture(self, run_id, label, data):
+    def _capture(self, run_id, label, data, **options):
         try:
-            self.traces.add(run_id, label, data, raw=True)
+            self.traces.add(run_id, label, data, raw=True, **options)
         except Exception:
             self._warn_once("DIAGNOSTIC_CAPTURE_FAILED")
 
@@ -201,13 +203,34 @@ class ActiveMessagePlugin(Star):
         run_id = record.get("run_id")
         if run_id:
             try:
-                label = record.get("message", record["code"])
-                if record["code"] == "PROACTIVE_PROGRESS":
+                code = record["code"]
+                label = record.get("message", code)
+                key = None
+                tone = "error" if record.get("level") == "error" else "warning" if record.get("level") == "warning" else "neutral"
+                data = record
+                if code == "PROACTIVE_PROGRESS":
+                    # Live progress still updates; routine transitions do not need their own history rows.
+                    if record.get("phase") in {"agent", "agent_hooks", "context_processing", "llm", "tool", "send", "history", "complete"}:
+                        return
                     label = "主动聊天 · " + record.get("phase_label", "执行中")
-                    if record.get("tool"):
-                        label += " · " + record["tool"]
-                self.traces.add(run_id, label, record,
-                                terminal=record["code"] in {"PROACTIVE_TIMEOUT", "PROACTIVE_RUN_FAILED", "PROACTIVE_COMPLETED"})
+                elif code in {"PROACTIVE_LLM_STARTED", "PROACTIVE_LLM_FINISHED", "PROACTIVE_LLM_ATTEMPT_ERROR"} and record.get("call"):
+                    key = "llm:" + str(record["call"])
+                    label = "第 " + str(record["call"]) + " 次模型调用"
+                    data = {"开始" if code.endswith("STARTED") else "异常" if code.endswith("ERROR") else "结果": record}
+                    if code.endswith("ERROR"):
+                        tone = "warning"
+                elif code == "MESSAGE_SENT":
+                    label, tone = "已确认发送成功", "success"
+                elif code in {"DECISION_COMPLETED", "AGENT_REQUESTED", "AGENT_STARTED"}:
+                    label = {"DECISION_COMPLETED": "插话评分与结论", "AGENT_REQUESTED": "判断通过，准备插话", "AGENT_STARTED": "开始主动聊天"}[code]
+                    tone = "decision"
+                elif code == "PROACTIVE_COMPLETED":
+                    label = "本轮结果：" + record.get("outcome", "已结束")
+                    tone = "error" if any(word in record.get("outcome", "") for word in ("失败", "超时", "未确认", "未退出")) else "success" if record.get("sent") else "warning" if "放弃" in record.get("outcome", "") else "neutral"
+                elif code in {"PROACTIVE_SEND_SKIPPED", "PROACTIVE_SKIPPED", "DECISION_STALE"}:
+                    tone = "warning"
+                self.traces.add(run_id, label, data, key=key, tone=tone,
+                                terminal=code in {"PROACTIVE_TIMEOUT", "PROACTIVE_RUN_FAILED", "PROACTIVE_NATIVE_ERROR", "PROACTIVE_COMPLETED", "MESSAGE_SENT"})
             except Exception:
                 return
             if record["code"] == "MESSAGE_SENT":
@@ -219,8 +242,10 @@ class ActiveMessagePlugin(Star):
         links_ready = False
         try:
             async with self._settings_lock:
+                default_warnings = [warning for warning in self.settings.warnings if warning["code"] == "CONFIG_DEFAULTED"]
                 view = await self.agenda_store.initialize(self.config_raw)
                 self.settings = Settings(view)
+                self.settings.warnings.extend(warning for warning in default_warnings if warning not in self.settings.warnings)
                 self.plugin_config = self.settings.config
                 self.scopes = self.settings.scopes
                 self._scope_error = bool(self.settings.scope_error)
@@ -247,9 +272,12 @@ class ActiveMessagePlugin(Star):
             payload = await self.state_file.load()
             self.runtime.restore(payload, self.plugin_config.max_recent_messages)
             if payload.get("proactive_schedule_version") != PROACTIVE_SCHEDULE_VERSION:
-                # 只迁移旧算法的待执行时间；聊天计数和其他运行状态保持不变。
+                # 排期算法不同则重新安排机会；聊天计数和其他运行状态保持不变。
                 for state in self.runtime.sessions.values():
                     state.proactive_next_run = None
+                    state.proactive_schedule_date = ""
+                    state.proactive_schedule_key = ""
+                    state.proactive_schedule.clear()
         except Exception as exc:
             self._valid = False
             self._state_valid = False
@@ -633,7 +661,12 @@ class ActiveMessagePlugin(Star):
     async def on_using_tool(self, event: AstrMessageEvent, tool: Any, tool_args: dict | None) -> None:
         meta = event.get_extra(META_KEY, {})
         if meta.get("plugin") == PLUGIN_ID:
-            self._capture(meta["run_id"], "Agent 工具调用", {"tool":getattr(tool,"name",""), "arguments":tool_args})
+            name = getattr(tool, "name", "")
+            seq = meta["trace_tool_seq"] = meta.get("trace_tool_seq", 0) + 1
+            key = "tool:" + str(seq)
+            meta.setdefault("trace_tools", {})[(asyncio.current_task(), name)] = (key, time.monotonic())
+            self._capture(meta["run_id"], "调用工具 · " + name,
+                          {"tool": name, "arguments": tool_args, "state": "执行中"}, key=key)
         if getattr(tool, "name", "") == "send_message_to_user":
             event.set_extra("_active_message_send_seq", event.get_extra("_active_message_send_seq", 0) + 1)
 
@@ -646,7 +679,12 @@ class ActiveMessagePlugin(Star):
             else:
                 captured = {"text_parts":tool_response_text(tool_result), "type":type(tool_result).__name__,
                             "note":"非纯文本工具结果仅展示文本部分，不代表媒体或二进制全文。"}
-            self._capture(meta["run_id"], "Agent 工具返回", {"tool":getattr(tool,"name",""), "result":captured})
+            name = getattr(tool, "name", "")
+            key, start = meta.get("trace_tools", {}).pop((asyncio.current_task(), name), (None, time.monotonic()))
+            error = bool(getattr(tool_result, "isError", False)) or tool_response_text(tool_result).lstrip().lower().startswith("error:")
+            self._capture(meta["run_id"], "调用工具 · " + name,
+                          {"tool": name, "result": captured, "state": "返回异常" if error else "已返回",
+                           "seconds": round(time.monotonic() - start, 3)}, key=key, tone="warning" if error else "neutral")
         if getattr(tool, "name", "") != "send_message_to_user":
             return
         text = tool_response_text(tool_result)
@@ -674,7 +712,8 @@ class ActiveMessagePlugin(Star):
         proactive = meta.get("trigger_type") == "主动聊天"
         # 已发送即消耗一次额度；分段消息不重复计数，未发送的正常完成在收尾计数。
         count_turn = proactive and not event.get_extra("_active_message_sent", False)
-        if self.runtime.sent(sid, key, self._now(sid).date().isoformat(), cfg, proactive=count_turn):
+        date = meta.get("scheduled_date", self._now(sid).date().isoformat()) if proactive else self._now(sid).date().isoformat()
+        if self.runtime.sent(sid, key, date, cfg, proactive=count_turn):
             event.set_extra("_active_message_sent", True)
             if meta.get("progress"):
                 meta["progress"].sent = True
@@ -713,7 +752,7 @@ class ActiveMessagePlugin(Star):
                            persona_prompt=prompt, persona_name=name, conversation_history=json.dumps(bundle.history, ensure_ascii=False),
                            recent_messages=recent, message_count=len(state.recent_human), silence_seconds=silence,
                            activity_score=activity, energy_score=energy, threshold=self._threshold(sid),
-                           mood=(current_mood(now, cfg.sleep_hours, cfg.active_hours) if cfg.proactive_enabled and self._feature_valid(sid, "proactive") else "正常"), trigger_type=trigger_type,
+                           mood=current_mood(now, cfg.sleep_hours, cfg.active_hours), trigger_type=trigger_type,
                            last_human_at=state.last_human_at, last_bot_at=state.last_bot_at, unreplied_count=self.runtime.unreplied.get(sid, 0))
         values["image_descriptions"] = json.dumps(bundle.images, ensure_ascii=False)
         values["_context_payload"] = bundle.payload()
@@ -759,15 +798,17 @@ class ActiveMessagePlugin(Star):
         if not self._available():
             return None
         deadlines = []
-        now = self._now()
         for sid in self.scopes.targets(self.runtime.sessions):
-            _, group = self.scopes.match(sid)
-            if not self._feature_valid(sid, "proactive") or not self._config_for(sid).enabled or not self._config_for(sid).proactive_enabled or sid in self._proactive_tasks:
+            cfg = self._config_for(sid)
+            if not self._feature_valid(sid, "proactive") or not cfg.enabled or not cfg.proactive_enabled:
                 continue
+            now = self._now(sid)
+            # A midnight wake creates the next day's plan even if today has no slots.
+            deadlines.append((now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp())
             state = self.runtime.sessions.get(sid)
             if state and state.proactive_next_run:
-                deadlines.append(datetime.fromisoformat(state.proactive_next_run))
-        return max(0.0, (min(deadlines) - now).total_seconds()) if deadlines else None
+                deadlines.append(datetime.fromisoformat(state.proactive_next_run).timestamp())
+        return max(0.0, min(deadlines) - time.time()) if deadlines else None
 
     def _proactive_block_reason(self, sid: str) -> str:
         cfg = self._config_for(sid)
@@ -804,61 +845,66 @@ class ActiveMessagePlugin(Star):
         if not self._available() or not self.settings.any_enabled("proactive") or self._tick_lock.locked():
             return
         async with self._tick_lock:
-            now = self._now()
             for sid in self.scopes.targets(self.runtime.sessions):
-                matched, group = self.scopes.match(sid)
-                if not matched or not self._feature_valid(sid, "proactive") or not self._config_for(sid).enabled or not self._config_for(sid).proactive_enabled:
+                matched, _ = self.scopes.match(sid)
+                cfg = self._config_for(sid)
+                if not matched or not self._feature_valid(sid, "proactive") or not cfg.enabled or not cfg.proactive_enabled:
                     continue
                 try:
                     state = self.runtime.get(sid)
                 except ValueError:
                     self._warn_once("SESSION_CAPACITY", sid)
                     continue
-                if sid in self._proactive_tasks:
-                    continue
-                if not state.proactive_next_run:
-                    self._schedule_next(sid)
-                    if not state.proactive_next_run:
+                self._schedule_next(sid)
+                now = self._now(sid)
+                due = [row for row in state.proactive_schedule if row["status"] == "pending"
+                       and datetime.fromisoformat(row["at"]).timestamp() <= now.timestamp()]
+                for row in due:
+                    # An overdue slot must never turn into a burst after a stall.
+                    late = now.timestamp() - datetime.fromisoformat(row["at"]).timestamp()
+                    reason = ("预约时间已过去。" if late > 60 else
+                              "本会话上一轮主动任务仍在进行。" if sid in self._proactive_tasks else
+                              self._proactive_block_reason(sid))
+                    if reason:
+                        row.update(status="missed" if late > 60 else "skipped", reason=reason)
+                        self.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid, explanation=reason)
                         continue
-                try:
-                    due = datetime.fromisoformat(state.proactive_next_run)
-                    if due.tzinfo is None:
-                        raise ValueError("timezone required")
-                except (TypeError, ValueError):
-                    self._warn_once("SCHEDULE_REPAIRED", sid)
+                    row["status"] = "running"
+                    self.runtime.invalidate(sid)
+                    run_id = uuid.uuid4().hex
+                    meta = {"plugin": PLUGIN_ID, "run_id": run_id, "trigger_type": "主动聊天",
+                            "scheduled_at": row["at"], "scheduled_date": state.proactive_schedule_date,
+                            "activation_template": random.choice(cfg.proactive_prompts)}
                     self._schedule_next(sid)
-                    continue
-                if due > now:
-                    continue
-                reason = self._proactive_block_reason(sid)
-                if reason:
-                    self._schedule_next(sid)
-                    self.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid, explanation=reason)
-                    continue
-                self.runtime.invalidate(sid)
-                run_id = uuid.uuid4().hex
-                meta = {"plugin": PLUGIN_ID, "run_id": run_id, "trigger_type": "主动聊天", "activation_template": random.choice(self._config_for(sid).proactive_prompts)}
-                self.traces.begin(run_id, sid, "主动聊天")
-                self.traces.add(run_id, "计划到期且前置检查通过", {"due":state.proactive_next_run})
-                state.proactive_run_id = run_id
-                task = asyncio.create_task(self._run_proactive(sid, meta), name="active-message-proactive")
-                self._proactive_tasks[sid] = task
+                    # Reserve before dispatch: a restart must not send this slot again.
+                    if not await self._persist_state():
+                        self._state_valid = self._valid = False
+                        return
+                    self.traces.begin(run_id, sid, "主动聊天")
+                    self.traces.add(run_id, "预约到期，开始主动聊天", {"due": row["at"]}, tone="decision")
+                    state.proactive_run_id = run_id
+                    self._proactive_tasks[sid] = asyncio.create_task(self._run_proactive(sid, meta), name="active-message-proactive")
+                self._schedule_next(sid)
             await self._persist_state()
 
     def _schedule_next(self, sid: str) -> None:
+        """Retain today's sampled slots; rebuild only on a new day or changed rules."""
         cfg = self._config_for(sid)
         state = self.runtime.get(sid)
-        run_at, mood = choose_proactive_run_at(now=self._now(sid), timezone_name=cfg.timezone,
-                                              sleep_hours=cfg.sleep_hours, active_hours=cfg.active_hours,
-                                              min_minutes=cfg.proactive_min_interval_minutes,
-                                              max_minutes=cfg.proactive_max_interval_minutes,
-                                              active_multiplier=cfg.active_interval_multiplier)
-        state.proactive_next_run = run_at.isoformat() if run_at is not None else None
-        if run_at is None:
-            self.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid,
-                              explanation="睡眠时段覆盖全天，暂无可安排的主动聊天时间。")
-            return
-        self.observer.log("debug", "PROACTIVE_SCHEDULED", sid=sid, run_at=state.proactive_next_run, mood=mood)
+        now = self._now(sid)
+        today = now.date().isoformat()
+        key = json.dumps([str(now.tzinfo), cfg.sleep_hours, cfg.active_hours, cfg.proactive_daily_limit], ensure_ascii=False)
+        if state.proactive_schedule_date != today or state.proactive_schedule_key != key:
+            history = ([row for row in state.proactive_schedule if row["status"] != "pending"]
+                       if state.proactive_schedule_date == today else [])
+            used = max(len(history), state.daily_proactive_sent if state.last_bot_date == today else 0)
+            points = choose_proactive_schedule(now=now, timezone_name=cfg.timezone,
+                sleep_hours=cfg.sleep_hours, active_hours=cfg.active_hours, attempts=cfg.proactive_daily_limit)
+            points = points[:max(0, cfg.proactive_daily_limit - used)]
+            state.proactive_schedule = history + [{"at": point.isoformat(), "status": "pending"} for point in points]
+            state.proactive_schedule_date, state.proactive_schedule_key = today, key
+            self.observer.log("debug", "PROACTIVE_SCHEDULED", sid=sid, opportunities=len(points), date=today)
+        state.proactive_next_run = next((row["at"] for row in state.proactive_schedule if row["status"] == "pending"), None)
 
     async def _run_proactive(self, sid: str, meta: dict[str, Any]) -> None:
         cfg = self._config_for(sid)
@@ -880,7 +926,7 @@ class ActiveMessagePlugin(Star):
                     progress.check_deadline()
                     if progress.completed and not progress.sent and not any(not task.done() for task in progress.active_tools):
                         # 此处已完成整轮且通过截止时间检查；失败、取消、前置跳过不计。
-                        self.runtime.consume_proactive(sid, self._now(sid).date().isoformat())
+                        self.runtime.consume_proactive(sid, meta.get("scheduled_date", self._now(sid).date().isoformat()))
                         self.observer.log("info", "PROACTIVE_QUOTA_USED", sid=sid, run_id=meta["run_id"],
                                           daily_proactive_sent=self.runtime.get(sid).daily_proactive_sent)
                 else:
@@ -912,6 +958,13 @@ class ActiveMessagePlugin(Star):
                 outcome += "；工具未退出，插件已暂停"
             self.observer.log("info", "PROACTIVE_COMPLETED", sid=sid, run_id=meta["run_id"],
                               outcome=outcome, **progress.snapshot())
+            state = self.runtime.get(sid)
+            for row in state.proactive_schedule:
+                if row["at"] == meta.get("scheduled_at"):
+                    status = ("sent" if progress.sent else "quiet" if progress.completed else
+                              "skipped" if "跳过" in outcome or "放弃" in outcome else "failed")
+                    row.update(status=status, reason=outcome)
+                    break
             self.traces.finish(meta["run_id"], outcome)
             self._proactive_tasks.pop(sid, None)
             self._agent_events.pop(sid, None)
@@ -989,14 +1042,16 @@ class ActiveMessagePlugin(Star):
             self._updating = False
             await self._start_scheduler()
 
-    async def _persist_state(self) -> None:
+    async def _persist_state(self) -> bool:
         async with self._persist_lock:
             try:
                 payload = self.runtime.dump()
                 payload["proactive_schedule_version"] = PROACTIVE_SCHEDULE_VERSION
                 await self.state_file.save(payload)
+                return True
             except Exception as exc:
                 self.observer.error("STATE_SAVE_FAILED", exc)
+                return False
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("active_status")

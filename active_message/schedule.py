@@ -1,4 +1,4 @@
-"""作息时段、下次主动时间计算与可重设的单闹钟调度。"""
+"""作息时段、每日主动机会分配与可重设的单闹钟调度。"""
 from __future__ import annotations
 
 import random
@@ -52,7 +52,63 @@ def current_mood(now: datetime, sleep_hours: str, active_hours: str) -> str:
     return "正常"
 
 
-PROACTIVE_SCHEDULE_VERSION = 2
+PROACTIVE_SCHEDULE_VERSION = 3
+
+
+def _day_intervals(day: datetime, sleep_ranges: list[tuple[int, int]], active_ranges: list[tuple[int, int]]) -> list[tuple[datetime, datetime]]:
+    """按真实经过的秒数展开当天活跃区间，兼容跨午夜和夏令时。"""
+    boundaries = sorted({0} | {minute for pair in sleep_ranges + active_ranges for minute in pair})
+    end = (day + timedelta(days=1)).astimezone(timezone.utc)
+    cursor = day.astimezone(timezone.utc)
+    intervals: list[tuple[datetime, datetime]] = []
+    while cursor < end:
+        local = cursor.astimezone(day.tzinfo)
+        boundary = min(_next_boundary(local, boundaries), end)
+        if in_time_ranges(local, active_ranges) and not in_time_ranges(local, sleep_ranges):
+            if intervals and intervals[-1][1] == cursor:
+                intervals[-1] = (intervals[-1][0], boundary)
+            else:
+                intervals.append((cursor, boundary))
+        cursor = boundary
+    return intervals
+
+
+def choose_proactive_schedule(
+    *, now: datetime, timezone_name: str, sleep_hours: str, active_hours: str,
+    attempts: int,
+) -> list[datetime]:
+    """按整天有效活跃时间分层随机抽样，只返回尚未过去的机会。
+
+    每份在中间 60% 内独立随机取点，相邻份至少隔开一份时长的 40%；
+    跨时段按有效秒数映射。中途启动不会把全天机会挤进剩余时间。
+    """
+    tz = get_timezone(timezone_name) if timezone_name else now.tzinfo or get_timezone("")
+    now = now.astimezone(tz) if now.tzinfo is not None else now.replace(tzinfo=tz)
+    if attempts <= 0:
+        return []
+    sleep_ranges = parse_time_ranges(sleep_hours)
+    active_ranges = parse_time_ranges(active_hours)
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    intervals = _day_intervals(day, sleep_ranges, active_ranges)
+    total = sum((end - start).total_seconds() for start, end in intervals)
+    count = int(attempts)
+    if count <= 0 or total <= 0:
+        return []
+    points: list[datetime] = []
+    for index in range(count):
+        left = total * index / count
+        right = total * (index + 1) / count
+        width = right - left
+        target = random.uniform(left + width * .2, left + width * .8)
+        for start, end in intervals:
+            length = (end - start).total_seconds()
+            if target < length:
+                point = start + timedelta(seconds=target)
+                if point > now.astimezone(timezone.utc) and point < end:
+                    points.append(point.astimezone(tz))
+                break
+            target -= length
+    return points
 
 
 def _next_boundary(now: datetime, boundaries: list[int]) -> datetime:
@@ -81,53 +137,6 @@ def _next_boundary(now: datetime, boundaries: list[int]) -> datetime:
         boundary = right
     return boundary
 
-
-def choose_proactive_run_at(
-    *,
-    now: datetime,
-    timezone_name: str,
-    sleep_hours: str,
-    active_hours: str,
-    min_minutes: int,
-    max_minutes: int,
-    active_multiplier: float,
-) -> tuple[datetime | None, str]:
-    """抽取一次等效正常等待量：睡眠暂停，活跃按倍率加速，跨段不重抽。
-
-    返回计划时间和排期时的 mood；每天均无清醒时段时不安排计划。
-    """
-    tz = get_timezone(timezone_name) if timezone_name else now.tzinfo or get_timezone("")
-    now = now.astimezone(tz) if now.tzinfo is not None else now.replace(tzinfo=tz)
-    mood = current_mood(now, sleep_hours, active_hours)
-    sleep_ranges = parse_time_ranges(sleep_hours)
-    active_ranges = parse_time_ranges(active_hours)
-    boundaries = sorted({0} | {
-        minute for start, end in sleep_ranges + active_ranges for minute in (start, end)
-    })
-    # 在每个分段起点检查，兼容跨午夜、重叠时段及多段合起来覆盖全天。
-    if all(in_time_ranges(now.replace(hour=minute // 60, minute=minute % 60), sleep_ranges)
-           for minute in boundaries):
-        return None, mood
-
-    low = max(1, min(int(min_minutes), int(max_minutes)))
-    high = max(low, int(max_minutes))
-    remaining = random.uniform(low, high) * 60.0
-    active_multiplier = max(0.1, float(active_multiplier))
-    cursor = now
-    while True:
-        boundary = _next_boundary(cursor, boundaries)
-        if not in_time_ranges(cursor, sleep_ranges):
-            multiplier = active_multiplier if in_time_ranges(cursor, active_ranges) else 1.0
-            cursor_utc = cursor.astimezone(timezone.utc)
-            capacity = (boundary - cursor_utc).total_seconds() / multiplier
-            if remaining < capacity:
-                run_at = cursor_utc + timedelta(seconds=remaining * multiplier)
-                # 微秒舍入也不能让结果越过边界，尤其不能落在睡眠起点。
-                if run_at < boundary:
-                    return run_at.astimezone(tz), mood
-            remaining = max(0.0, remaining - capacity)
-        # 睡眠段不扣除等待量；其余时段保留尚未消耗的部分。
-        cursor = boundary.astimezone(tz)
 
 
 class DeadlineAlarm:

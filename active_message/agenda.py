@@ -425,7 +425,7 @@ class Agenda:
             try:
                 get_timezone(timezone_name)
             except (ValueError, KeyError):
-                self.errors.append(("proactive_chat.timezone", "日程时区无效，请填写 IANA 时区，例如 Asia/Shanghai。"))
+                self.errors.append(("routine.timezone", "日程时区无效，请填写 IANA 时区，例如 Asia/Shanghai。"))
         rows = raw.get("events", [])
         if len(rows) > max_events:
             self.errors.append(("agenda.events", f"此日程目录最多 {max_events} 条。"))
@@ -873,12 +873,12 @@ class AgendaStore:
                 "version": 1, "revision": uuid.uuid4().hex, "events": []}
             raw = config_only(config)
             if not isinstance(raw.get("agenda", {}), dict):
-                raise AgendaStoreError("日程设置必须为对象；原数据未修改。")
-            if not isinstance(raw.get("session_groups", []), list) or any(
-                    not isinstance(g, dict) for g in raw.get("session_groups", [])):
-                raise AgendaStoreError("会话组格式错误，无法保存日程关联。")
+                raw["agenda"] = {}
             raw.setdefault("agenda", {})["events"] = copy.deepcopy(payload["events"])
-            changed = normalize_agenda_links(raw)
+            groups = raw.get("session_groups", [])
+            # Settings supplies defaults for incompatible configuration shapes.
+            # Do not infer or persist group links from an unreadable scope.
+            changed = normalize_agenda_links(raw) if isinstance(groups, list) and all(isinstance(g, dict) for g in groups) else False
             payload["events"] = copy.deepcopy(raw["agenda"]["events"])
             if changed:
                 payload = await self._transaction(config, payload, previous, raw)
