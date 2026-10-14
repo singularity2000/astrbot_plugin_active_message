@@ -1,7 +1,7 @@
 /* Browsing is UI state; explicit actions save runtime agenda data independently. */
 (() => {
   'use strict';
-  const {node:el,dialog,help,helpTag,dateRangePicker}=window.ActiveMessageUI;
+  const {node:el,dialog,help,helpTag,dateRangePicker,preserveView}=window.ActiveMessageUI;
   const statusNames={current:'进行中',upcoming:'待发生',expired:'已结束',unknown:'无法判断'};
   const defaults=()=>({keyword:'',status:'active',enabled:'',origin:'',repeat:'',effect:'',excluded:'',start:'',end:''});
   window.createAgendaListUI=({state,edit,describe,saveAgenda,refreshAgenda,fail,previewSoon,persistPrefs})=>{
@@ -76,7 +76,7 @@
       await dialog({title:'重新关联日程',message:'确认后直接保存。选择全局会让继承它的会话都能看到这条日程。',content:select,confirm:'保存日程',validate:()=>!!select.value,submit:()=>saveAgenda({action:'upsert',original_id:event.id,event:{...event,group_id:select.value==='global'?'':state.saved.session_groups[Number(select.value)].agenda_id}},revision)});
     }
     function card(row){
-      const {event,inherited,excluded,orphaned}=row,meta=info(row),article=el('article',undefined,'agenda-row');article.dataset.eventId=event.id;article.classList.toggle('agenda-muted',excluded||!event.enabled);article.classList.toggle('agenda-selected',selected.has(event.id));
+      const {event,inherited,excluded,orphaned}=row,meta=info(row),article=el('article',undefined,'agenda-row');article.dataset.eventId=event.id;article.dataset.viewKey='agenda:'+event.id;article.classList.toggle('agenda-muted',excluded||!event.enabled);article.classList.toggle('agenda-selected',selected.has(event.id));
       const pick=el('input');pick.type='checkbox';pick.checked=selected.has(event.id);pick.setAttribute('aria-label','选择日程：'+(event.title||'未命名日程'));pick.onchange=()=>{pick.checked?selected.add(event.id):selected.delete(event.id);draw();};
       const infoBox=el('div',undefined,'agenda-row-info'),heading=el('div',undefined,'agenda-row-heading');heading.append(pick,el('strong',event.title||'未命名日程'));
       heading.append(event.target_sids?.length?helpTag('指定会话（'+event.target_sids.length+' 个）',event.target_sids.join('\n'),'指定会话'):el('span',orphaned?'未关联会话组':inherited?'来自全局':group?'本组新增':'全局','tag'));
@@ -93,6 +93,7 @@
     }
     function draw(){
       if(!host)return;
+      const restore=preserveView();
       const focused=document.activeElement,focusLabel=focused?.getAttribute('aria-label'),focusCaption=focused?.tagName==='BUTTON'?focused.textContent:null;
       const available=rows(),ids=new Set(available.map(row=>row.event.id));for(const id of selected)if(!ids.has(id))selected.delete(id);
       const matching=available.filter(matches),totalPages=Math.max(1,Math.ceil(matching.length/pageSize));page=Math.min(page,totalPages);
@@ -113,6 +114,7 @@
       const sizeLabel=el('label','每页'),size=el('input');size.type='number';size.min=1;size.max=100;size.step=1;size.value=pageSize;size.setAttribute('aria-label','每页日程数量');sizeLabel.append(size,el('span','条'));pager.append(sizeLabel);
       size.oninput=()=>size.setCustomValidity('');size.onchange=()=>{const value=Number(size.value);if(!size.value||!Number.isInteger(value)||value<1||value>100){size.setCustomValidity('每页数量需要 1～100 的整数。');size.reportValidity();size.value=pageSize;return;}pageSize=value;page=1;persistPrefs?.({agenda_page_size:value});draw();};
       if(!focused?.isConnected&&(focusLabel||focusCaption)){const replacement=[...host.querySelectorAll('input,button')].find(node=>focusLabel?node.getAttribute('aria-label')===focusLabel:node.tagName==='BUTTON'&&node.textContent===focusCaption);(replacement&&!replacement.disabled?replacement:jump).focus({preventScroll:true});}
+      restore();
     }
     return {
       render(target,selectedGroup){

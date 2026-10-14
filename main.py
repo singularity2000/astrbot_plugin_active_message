@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.4.0"
+PLUGIN_VERSION = "1.4.2"
 
 import asyncio
 import hashlib
@@ -23,7 +23,7 @@ from .active_message.agenda import (
     AgendaStore, AgendaStoreError, ScheduleTool,
     context_text, prepare_events, publish_agenda_schema,
 )
-from .active_message.context_input import ContextUnavailable, read_context
+from .active_message.context_input import ContextUnavailable, group_history_limit, read_context
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
 from .active_message.diagnostics import Observability, TraceStore
@@ -214,6 +214,8 @@ class ActiveMessagePlugin(Star):
                     if record.get("phase") in {"agent", "agent_hooks", "context_processing", "llm", "tool", "send", "history", "complete"}:
                         return
                     label = "主动聊天 · " + record.get("phase_label", "执行中")
+                elif code == "JUDGMENT_INPUT":
+                    label = f"判断输入已准备 · {record.get('recent_submitted', 0)} 条群消息"
                 elif code in {"PROACTIVE_LLM_STARTED", "PROACTIVE_LLM_FINISHED", "PROACTIVE_LLM_ATTEMPT_ERROR"} and record.get("call"):
                     key = "llm:" + str(record["call"])
                     label = "第 " + str(record["call"]) + " 次模型调用"
@@ -360,8 +362,8 @@ class ActiveMessagePlugin(Star):
         message_id = str(getattr(event.message_obj, "message_id", "") or f"event-{id(event)}")
         added = self.runtime.incoming(sid, MessageObservation(
             time.time(), message_id, event.get_sender_id(), event.get_sender_name(),
-            (event.get_message_outline() or event.get_message_str())[:1000],
-        ), cfg)
+            text_only(event.get_message_outline() or event.get_message_str(), cfg.message_max_chars),
+        ), cfg, context_limit=group_history_limit(self.context, sid))
         if not added:
             event.set_extra("_active_message_duplicate", True)
             return
@@ -737,8 +739,9 @@ class ActiveMessagePlugin(Star):
                                             target_messages=cfg.activity_target_messages,
                                             freshness_seconds=cfg.activity_freshness_seconds)
         energy = calculate_energy_score(recent_bot_count=len(state.recent_bot_timestamps), target_messages=cfg.energy_target_messages)
-        bundle = await read_context(self.context, sid, conversation, cfg, state.recent_human)
-        if bundle.source == "runtime_summary_incomplete":
+        del state.recent_context[:-group_history_limit(self.context, sid)]
+        bundle = await read_context(self.context, sid, conversation, cfg, state.recent_context)
+        if bundle.source == "runtime_group_history":
             self._warn_once("CONTEXT_RUNTIME_FALLBACK", sid)
         self.observer.log("debug", "CONTEXT_PREPARED", sid=sid, trigger_type=trigger_type, **bundle.counts())
         if bundle.image_source == "unavailable":
@@ -764,7 +767,10 @@ class ActiveMessagePlugin(Star):
             values["_context_payload"]["schedule"] = agenda
         run_id = event.get_extra("_active_message_run_id") or event.get_extra(META_KEY, {}).get("run_id")
         values["_run_id"] = run_id
-        self.traces.add(run_id, "上下文条数与来源", bundle.counts())
+        counts = bundle.counts()
+        label = ("群消息已回退 · " if bundle.fallback_reasons else "群消息参考 · ") + counts["source_label"]
+        self.traces.add(run_id, label if bundle.group_limit else "原会话历史已准备", counts,
+                        tone="warning" if bundle.fallback_reasons else "neutral")
         self._capture(run_id, "判断用文字上下文（非原生完整历史）", bundle.payload())
         return values
 
@@ -1143,6 +1149,7 @@ class ActiveMessagePlugin(Star):
             for sid, state in self.runtime.sessions.items():
                 state.proactive_next_run = None
                 self.runtime.prune(state, self._config_for(sid), time.time())
+                del state.recent_context[:-group_history_limit(self.context, sid)]
         finally:
             self._updating = False
             await self._start_scheduler()

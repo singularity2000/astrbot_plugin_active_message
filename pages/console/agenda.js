@@ -1,7 +1,7 @@
 /* Schedule editor and read-only calendar. Dates/recurrence are evaluated by Python, not reimplemented here. */
 (() => {
   'use strict';
-  const {node:el,dialog,help,helpNote}=window.ActiveMessageUI;
+  const {node:el,dialog,help,helpNote,preserveView}=window.ActiveMessageUI;
   const weekdays=['周一','周二','周三','周四','周五','周六','周日'];
   const clone=v=>JSON.parse(JSON.stringify(v));
   const shortTime=value=>value?.slice(11,16)||'';
@@ -97,6 +97,7 @@
     }
     function drawCalendar(){
       const box=document.getElementById('agenda-calendar');if(!box||!calendar)return;
+      const restore=preserveView();
       box.replaceChildren();
       const toolbar=el('div',undefined,'calendar-toolbar'),prev=el('button','‹ 上月'),next=el('button','下月 ›'),today=el('button','今天'),heading=el('h3',calendar.month);heading.id='calendar-heading';
       const sessionPicker=el('select');sessionPicker.className='calendar-session-picker';sessionPicker.setAttribute('aria-label','日历会话筛选');sessionPicker.add(new Option(group?'本组日程总览':'全局与定向日程总览',''));
@@ -105,12 +106,12 @@
       const monthPicker=el('input');monthPicker.type='month';monthPicker.min='1900-01';monthPicker.max='2199-12';monthPicker.value=calendar.month;monthPicker.setAttribute('aria-label','跳转日历月份');monthPicker.className='calendar-month-picker';monthPicker.onchange=()=>{if(!monthPicker.value||!monthPicker.validity.valid)return;state.calendarMonth=monthPicker.value;state.previewSeq++;selected='';heading.textContent=state.calendarMonth+' · 计算中…';previewSoon();};
       const navigation=el('div',undefined,'calendar-navigation');navigation.append(prev,today,next);
       toolbar.append(heading,monthPicker,navigation);box.append(toolbar,el('p','日历预览 · '+calendar.timezone+' · '+(calendar.enabled?'日程功能已开启':'日程功能未开启，以下仅预览日程'),'muted'));
-      if(calendar.errors?.length){box.append(el('p','日程或时间设置尚有错误，修正后才会计算日历。','warning'));return;}
+      if(calendar.errors?.length){box.append(el('p','日程或时间设置尚有错误，修正后才会计算日历。','warning'));restore();return;}
       const grid=el('div',undefined,'calendar-grid');grid.setAttribute('aria-label',calendar.month+' 日历，周一至周日');
       weekdays.forEach(day=>grid.append(el('div',day,'calendar-weekday')));
       if(!calendar.days.some(d=>d.date===selected))selected=calendar.today.startsWith(calendar.month)?calendar.today:calendar.month+'-01';
       for(const day of calendar.days){
-        const cell=el('button',undefined,'calendar-day');if(!day.date.startsWith(calendar.month))cell.classList.add('outside-month');if(day.date===calendar.today)cell.classList.add('is-today');if(day.date===selected)cell.classList.add('selected');cell.setAttribute('aria-pressed',String(day.date===selected));
+        const cell=el('button',undefined,'calendar-day');cell.id='calendar-day-'+day.date;if(!day.date.startsWith(calendar.month))cell.classList.add('outside-month');if(day.date===calendar.today)cell.classList.add('is-today');if(day.date===selected)cell.classList.add('selected');cell.setAttribute('aria-pressed',String(day.date===selected));
         const visible=day.events;cell.setAttribute('aria-label',day.date+'，'+visible.length+' 项日程');cell.append(el('span',String(Number(day.date.slice(8))),'calendar-date'));
         visible.slice(0,3).forEach(e=>{const label=el('span',e.title,'calendar-event');label.title=e.origin+' · '+e.title+' · '+timeText(e);cell.append(label);});
         if(visible.length>3)cell.append(el('small','另有 '+(visible.length-3)+' 项'));
@@ -125,6 +126,7 @@
         const effects=[row.pause_interjection?'暂停智能插话':'',row.pause_proactive?'暂停主动聊天':''].filter(Boolean);if(effects.length)card.append(el('small',effects.join(' · ')));detail.append(card);}
       box.append(detail);
       const status=document.getElementById('agenda-now');if(status){status.replaceChildren();status.append(el('strong','日程状态预览 · '+shortTime(calendar.snapshot.now)));if(!state.saved.enabled)status.append(el('p','插件总开关已关闭；以下只预览规则，不代表实际已运行。','muted'));const current=calendar.snapshot.current;if(!calendar.enabled)status.append(el('p','日程功能已关闭：机器人不会收到日程背景，日程里的暂停规则也不生效。'));else if(!current.length)status.append(el('p','现在没有正在进行的日程。'));else current.forEach(row=>status.append(el('p',row.title+' · '+timeText(row)+' · '+([row.pause_interjection?'暂停插话':'',row.pause_proactive?'暂停主动聊天':''].filter(Boolean).join('、')||'只提供日程背景'))));const settings=state.liveEffective?.agenda;if(settings)status.append(el('small',String(settings.preview_days)==='0'?'自动日程背景已关闭，Agent 仍可查询和创建日程。':'自动背景预览：'+(settings.preview_days===''?'不限未来范围':settings.preview_days+' 天')+'；条数：'+(settings.max_items||'不限')+'。'));}
+      restore();
     }
     return {
       render(root,selectedGroup){

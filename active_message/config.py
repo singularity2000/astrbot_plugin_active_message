@@ -121,8 +121,6 @@ class PluginConfig:
     judgment_max_chars: int = 48000
     message_max_chars: int = 4000
     reuse_image_descriptions: bool = True
-    context_recent_messages: int = 50
-    missing_group_history: str = "skip"
     judgment_concurrency: int = 2
     proactive_concurrency: int = 2
     proactive_timeout_seconds: int | None = None
@@ -238,8 +236,6 @@ class PluginConfig:
             judgment_max_chars=_int(_as_dict(root.get("context")).get("judgment_max_chars"), 48000, 1),
             message_max_chars=_int(_as_dict(root.get("context")).get("message_max_chars"), 4000, 1),
             reuse_image_descriptions=_bool(_as_dict(root.get("context")).get("reuse_image_descriptions"), True),
-            context_recent_messages=_int(_as_dict(root.get("context")).get("recent_messages"), 50),
-            missing_group_history=_text(_as_dict(root.get("context")).get("missing_group_history"), "skip"),
             judgment_concurrency=_int(_as_dict(root.get("runtime")).get("judgment_concurrency"), 2, 1),
             proactive_concurrency=_int(_as_dict(root.get("runtime")).get("proactive_concurrency"), 2, 1),
             proactive_timeout_seconds=_optional_timeout(_as_dict(root.get("runtime")).get("proactive_timeout_seconds")),

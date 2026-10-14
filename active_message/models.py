@@ -73,6 +73,8 @@ class SessionRuntimeState:
     """单个 UMO 的短期运行状态，不将聊天正文写入持久化 JSON。"""
 
     recent_human: list[MessageObservation] = field(default_factory=list)
+    # Chat references outlive the activity window; never persist message text.
+    recent_context: list[MessageObservation] = field(default_factory=list)
     recent_bot_timestamps: list[float] = field(default_factory=list)
     last_human_at: float | None = None
     last_bot_at: float | None = None

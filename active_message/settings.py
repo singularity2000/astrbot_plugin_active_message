@@ -358,8 +358,6 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
         for key in ("sleep_hours", "active_hours"):
             check("shared", "routine." + key, lambda k=key: parse_time_ranges(getattr(config, k)),
                   "时段格式应为 HH:MM-HH:MM；多个时段使用英文逗号分隔。")
-        if config.missing_group_history not in {"skip", "runtime"}:
-            errors["shared"].append(("context.missing_group_history", "请选择 skip 或 runtime。"))
     if config.interjection_enabled:
         if config.debounce_max_seconds < config.debounce_seconds or config.debounce_max_seconds < 0:
             errors["interjection"].append(("interjection.debounce_max_seconds", "最长合并时间不能小于停顿等待时间。"))
@@ -414,7 +412,6 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
                       ("proactive", "runtime.proactive_timeout_seconds", 1, None, True)]
         if config.interjection_enabled or config.proactive_enabled:
             rules += [("shared", "context.history_messages", 0, None, True),
-                      ("shared", "context.recent_messages", 0, None, True),
                       ("shared", "context.judgment_max_tokens", 256, None, True),
                       ("shared", "context.judgment_max_chars", 1024, None, True),
                       ("shared", "context.message_max_chars", 64, None, True),

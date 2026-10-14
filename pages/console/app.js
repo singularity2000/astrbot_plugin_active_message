@@ -2,20 +2,21 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const {node: el, dialog, copyText, help, helpNote, hideHelp} = window.ActiveMessageUI;
+  const {node: el, dialog, copyText, help, helpNote, hideHelp, preserveView} = window.ActiveMessageUI;
   const clone = value => JSON.parse(JSON.stringify(value));
   const get = (obj, path) => path.reduce((o,k) => o?.[k], obj);
   const blank = v => v == null || (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && v.every(x => !String(x).trim()));
   const tabs = [['overview','运行总览'],['traces','决策回放'],['groups','会话组'],['interjection','智能插话'],['proactive','主动聊天'],['schedule','作息与日程'],['context','上下文与诊断']];
   const state = {tab:'overview',scope:-1,dirty:false,busy:false,config:null,schema:null,effective:null,status:null,
     run:null,step:0,traceSeq:0,previewSeq:0,live:false,traceLive:false,preferences:{theme:'auto'},placeholders:[],templateFocus:null,
-    samples:{model:0.8,activity:0.8,energy:0.6},tour:false};
+    samples:{model:0.8,activity:0.8,energy:0.6},scoreWeights:null,scoreScope:null,scoreCustom:false,tour:false};
   const traceBrowser=createTraceBrowser({state,el,section,refreshStatus,api,fail,drawTrace,persistPrefs});
   const scheduleView=createScheduleStrip({state,el});
   let statusPending=null;
   let bridge, previewTimer, latestTheme=false, fieldId=0, prefsQueue=Promise.resolve();
   const dock=window.createPlaceholderDock({catalog:()=>state.placeholders,report:notice});
   let draggedGroup=null;
+  let renderedScope=null,renderRevision=0;
   const changeTracker=window.ActiveMessageChanges.createTracker();
   let lastChangeLocations=[];
   const agendaUI=window.createAgendaUI({state,render,previewSoon,field,section,persistPrefs,saveAgenda,refreshAgenda,fail});
@@ -184,7 +185,9 @@
   }
 
   function notice(text, bad=false) {
+    const restore=$('notice').textContent!==(text||'')?preserveView():null;
     $('notice').textContent=text || ''; $('notice').hidden=!text; $('notice').classList.toggle('error',bad);
+    restore?.();
   }
   function fail(error) { notice(error?.message || String(error),true);if(!state.config)$('connection').textContent='连接未完成，请检查提示后重新载入'; }
   async function api(name, body, params) {
@@ -253,7 +256,7 @@
   function defaultObject(fields) { const out={};for(const [key,meta] of Object.entries(fields))out[key]=meta.type==='object'?defaultObject(meta.items):clone(meta.default??null);return out; }
   function selectTab(tab,persist=true) {
     if(!tabs.some(t=>t[0]===tab))return;
-    state.tab=tab;state.traceSeq++;state.previewSeq++;notice('');render();window.scrollTo(0,0);if(tab==='schedule')refreshStatus().catch(fail);if(persist)persistPrefs({tab});
+    state.tab=tab;state.traceSeq++;state.previewSeq++;notice('');render(false);window.scrollTo(0,0);if(tab==='schedule')refreshStatus().catch(fail);if(persist)persistPrefs({tab});
   }
   function nav() {
     $('nav').replaceChildren();
@@ -294,8 +297,6 @@
       sleep_hours:'睡眠时段不主动聊天，也不智能插话；正常 @ 回复照常。本组留空跟随全局，填“无”表示不设置。',
       active_hours:'只有活跃时段可以主动找人聊；本组留空跟随全局，填“无”表示不主动聊天。',
       history_messages:'只限制判断参考资料，不删改聊天历史；0 表示先选全部。',
-      recent_messages:'需要 AstrBot 已开启群消息历史保存；0 表示先选全部。',
-      missing_group_history:'skip 更稳妥；runtime 会使用可能不完整的插件短期摘要。',
       proactive_timeout_seconds:'留空跟随主框架；填写正整数才增加插件整轮时限，不改变模型和工具自身的限制。',
       agenda_mode:'跟随全局、只开启或只关闭本组日程功能；关闭不会删除日程。',
       preview_days:'默认 7；留空不限；0 关闭自动日程背景，仍可使用工具。',
@@ -315,7 +316,7 @@
   }
   function field(key,meta,obj,path,inherit=false) {
     if(meta.type==='object') {
-      obj[key]??={};const box=el('details',undefined,'form-section');box.open=true;const heading=el('summary',meta.description||key);if(meta.hint)heading.append(help(meta.description||key,meta.hint));box.append(heading);
+      obj[key]??={};const box=el('details',undefined,'form-section');box.dataset.viewKey='section:'+path.join('.');box.open=true;const heading=el('summary',meta.description||key);if(meta.hint)heading.append(help(meta.description||key,meta.hint));box.append(heading);
       const fields=el('div',undefined,'form-fields');appendFields(fields,obj[key],meta.items,path,inherit);box.append(fields);return box;
     }
     const row=el('div',undefined,'field');row.dataset.path=path.join('.');
@@ -324,7 +325,7 @@
     if(meta.hint){labelBox.append(help(meta.description||key,meta.hint,id+'-hint'));const inline=inlineHint(path,meta.hint,inherit);if(inline)labelBox.append(el('small',inline,'field-hint'));}
     const value=obj[key]??meta.default, phase=phaseFor(path);let input;
     if(phase)row.classList.add('template-field');
-    if(phase||['text','list'].includes(meta.type)||key==='jev_endpoint')row.classList.add('field-wide');
+    if(phase||['text','list'].includes(meta.type)||['jev_endpoint','jev_api_key'].includes(key))row.classList.add('field-wide');
     if(meta.type==='bool')row.classList.add('toggle-field');
     if(meta.type==='list') {
       if(!Array.isArray(obj[key]))obj[key]=[];
@@ -335,7 +336,7 @@
         obj[key].forEach((item,index)=>{
           const wrap=el('div',undefined,'list-item'),area=el('textarea');area.rows=phase?4:2;area.value=item;area.id=id+'-'+index;
           area.setAttribute('aria-label',(meta.description||key)+' '+(index+1));area.oninput=()=>{obj[key][index]=area.value;dirty();};bindTemplate(area,phase,meta.description);
-          const remove=el('button','移除');remove.onclick=()=>{obj[key].splice(index,1);dirty();draw();};wrap.append(area,remove);list.append(wrap);
+          const remove=el('button','移除');remove.onclick=()=>{const restore=preserveView();obj[key].splice(index,1);dirty();draw();restore();};wrap.append(area,remove);list.append(wrap);
         });
       }
       draw();const add=el('button',phase?'添加一套提示词':'添加一项');add.id=id;add.onclick=()=>{obj[key].push('');dirty();draw();[...list.querySelectorAll('textarea')].at(-1)?.focus();};ctl.append(list,add);
@@ -344,7 +345,7 @@
       if(['enabled','interjection.enabled','proactive_chat.enabled','agenda.enabled'].includes(path.join('.'))){input.classList.add('capsule-switch');input.setAttribute('role','switch');}
     } else if(meta.options||meta._special==='select_provider') {
       input=el('select');const options=meta.options||['',...(state.providers||[]).map(p=>p.id)];
-      const optionLabels={llm:'LLM · 聊天模型判断',jev:'Jev · 专用判断模型',skip:'跳过本轮并提示',runtime:'使用不完整的短期摘要'};
+      const optionLabels={llm:'LLM · 聊天模型判断',jev:'Jev · 专用判断模型'};
       options.forEach(option=>input.add(new Option(option===''?(inherit?'跟随全局':'请选择'):(optionLabels[option]||option),option)));
       if(value&&!options.includes(value))input.add(new Option(String(value)+'（当前值）',value));input.value=value??'';
       input.onchange=()=>changed(obj,key,input.value,true);
@@ -412,18 +413,23 @@
     try {
       const result=await api('preview',{config:clone(state.config),group_index:scope,...(state.tab==='schedule'?{calendar_month:state.calendarMonth||'',calendar_sid:state.calendarSid||'',...agendaUI.previewParams()}:{})});
       if(seq!==state.previewSeq||scope!==state.scope)return;
+      const restore=preserveView();
       state.effective=result.effective;state.liveEffective=result.live_effective||null;scheduleView.setClock(result.live_schedule_clock||result.schedule_clock);effectiveHints();showValidation(result.errors,result.warnings);drawScore();scheduleStrip();if(result.calendar)agendaUI.update(result.calendar,result.agenda_list);
+      restore();
     } catch(error){if(seq===state.previewSeq)notice('草稿预览未完成：'+error.message,true);}
   }
-  function render() {
+  function render(keepPosition=true) {
     if(!state.config)return;
+    const scopeKey=state.tab+':'+state.scope,restore=keepPosition&&renderedScope===scopeKey?preserveView():null;
+    renderedScope=scopeKey;
     hideHelp();dock.hide();fieldId=0;state.templateFocus=null;nav();scopeOptions();$('title').textContent=tabs.find(t=>t[0]===state.tab)[1];
     $('scope-bar').hidden=['overview','traces','groups'].includes(state.tab);refreshDirty();
-    const root=$('content');root.replaceChildren();root.classList.toggle('only-overrides',!!state.onlyOverrides&&state.scope>=0&&!['overview','traces','groups','schedule'].includes(state.tab));
+    const root=$('content');root.dataset.view=scopeKey+':'+(++renderRevision);root.replaceChildren();root.classList.toggle('only-overrides',!!state.onlyOverrides&&state.scope>=0&&!['overview','traces','groups','schedule'].includes(state.tab));
     if(state.scope>=0&&!['overview','traces','groups','schedule'].includes(state.tab)){const bar=el('div',undefined,'override-summary'),count=el('strong'),toggle=el('button',state.onlyOverrides?'显示所有参数':'只看本组覆盖');count.id='override-count';toggle.onclick=()=>{state.onlyOverrides=!state.onlyOverrides;render();};bar.append(count,toggle);root.append(bar);}
     if(state.tab==='overview')renderOverview(root);else if(state.tab==='traces')renderTraces(root);else if(state.tab==='groups')renderGroups(root);else renderSettings(root);
     if(state.tab!=='traces'){const v=el('aside',undefined,'validation-summary');v.id='validation';v.hidden=true;root.append(v);}
     effectiveHints();if(state.tab!=='traces')previewSoon();
+    restore?.();
   }
   function renderOverview(root) {
     const intro=section('什么时候开口，由插件把关','智能插话：在群聊中接话。主动聊天：隔一段时间主动找人聊。插件只决定何时唤醒机器人；回复仍由 AstrBot 原来的聊天助手生成，沿用原会话的人格、历史和可用工具。');intro.classList.add('intro');intro.id='overview-intro';
@@ -448,7 +454,7 @@
     const groups=state.config.session_groups;if(from<0||to<0||from>=groups.length||to>=groups.length||from===to)return;
     const scrollPosition={left:window.scrollX,top:window.scrollY};
     const selected=state.scope>=0?groups[state.scope]:null;const [item]=groups.splice(from,1);groups.splice(to,0,item);
-    state.scope=selected?groups.indexOf(selected):-1;draggedGroup=null;dirty();render();notice('已调整会话组顺序；保存后同步到配置文件。');
+    state.scope=selected?groups.indexOf(selected):-1;draggedGroup=null;dirty();render(false);notice('已调整会话组顺序；保存后同步到配置文件。');
     const grid=$('content').querySelector('.group-grid');
     // Header/notice height and rebuilt cards must not move the document after a drop.
     // Capture at drop time, not drag start, so intentional drag auto-scrolling is retained.
@@ -486,17 +492,29 @@
     const group=state.scope>=0?state.config.session_groups[state.scope]:null,gs=state.schema.session_groups.templates.group.items;
     if(state.tab==='interjection') {
       const box=section('智能插话','只处理普通群消息。正常 @、唤醒和命令交给主框架。关闭本功能不会清空参数。');box.id='feature-settings';root.append(box);
+      const model=section('判断模型','先选用于判断的模型，再调整评分规则。这里只决定是否接话；最终回复仍使用原会话的聊天模型、人格和工具。');model.id='judgment-settings';root.append(model);
+      const rules=section('评分与等待','权重决定各项的重要程度；最终分严格高于阈值，且不在冷却或暂停期间，才会尝试接话。');rules.id='scoring-settings';root.append(rules);
       if(group) {
         box.append(field('interjection_mode',gs.interjection_mode,group,['interjection','enabled'],true));
-        box.append(field('threshold_override',gs.threshold_override,group,['interjection','threshold'],true));
-        box.append(field('decision_mode',gs.decision_mode,group,['interjection','decision','mode'],true));
-        for(const [key,meta] of Object.entries(gs.interjection_overrides.items))box.append(field(key,meta,group.interjection_overrides,key==='activation_prompts'?['activation_prompts']:['interjection',key],true));
-        appendFields(box,group.decision_overrides,gs.decision_overrides.items,['interjection','decision'],true);
-        for(const key of ['weights','activity','energy']){const b=section(gs['interjection_'+key].description);appendFields(b,group['interjection_'+key],gs['interjection_'+key].items,['interjection',key],true);box.append(b);}
+        rules.append(field('threshold_override',gs.threshold_override,group,['interjection','threshold'],true));
+        model.append(field('decision_mode',gs.decision_mode,group,['interjection','decision','mode'],true));
+        model.append(el('p','模型服务、接口、密钥、超时和重试在“全局设置”中配置；本组可选择判断模式并覆盖提示词。','muted'));
+        appendFields(model,group.decision_overrides,gs.decision_overrides.items,['interjection','decision'],true);
+        for(const [key,meta] of Object.entries(gs.interjection_overrides.items))if(key!=='activation_prompts')rules.append(field(key,meta,group.interjection_overrides,['interjection',key],true));
+        for(const key of ['weights','activity','energy']){const b=section(gs['interjection_'+key].description);appendFields(b,group['interjection_'+key],gs['interjection_'+key].items,['interjection',key],true);rules.append(b);}
       } else {
-        appendFields(box,state.config.interjection,state.schema.interjection.items,['interjection']);appendFields(box,state.config,{activation_prompts:state.schema.activation_prompts});
+        box.append(field('enabled',state.schema.interjection.items.enabled,state.config.interjection,['interjection','enabled']));
+        const metas=state.schema.interjection.items.decision.items;
+        const order=['mode','provider_id','timeout_seconds','retry_attempts','retry_delay_seconds','jev_model','jev_endpoint','jev_api_key','prompt','jev_state_template'];
+        const keys=[...order.filter(k=>metas[k]),...Object.keys(metas).filter(k=>!order.includes(k))];
+        appendFields(model,state.config.interjection.decision,Object.fromEntries(keys.map(k=>[k,metas[k]])),['interjection','decision']);
+        appendFields(rules,state.config.interjection,Object.fromEntries(Object.entries(state.schema.interjection.items).filter(([k])=>!['enabled','decision'].includes(k))),['interjection']);
       }
-      renderScore(root);renderPlaceholders(root,['decision','activation']);
+      renderScore(root);
+      const prompts=section('插话时怎样说','填写希望机器人接话时遵守的要求；多套提示词会随机选一套。');prompts.id='activation-settings';root.append(prompts);
+      if(group)prompts.append(field('activation_prompts',gs.interjection_overrides.items.activation_prompts,group.interjection_overrides,['activation_prompts'],true));
+      else appendFields(prompts,state.config,{activation_prompts:state.schema.activation_prompts});
+      renderPlaceholders(root,['decision','activation']);
     } else if(['proactive','schedule'].includes(state.tab)) {
       const isSchedule=state.tab==='schedule',configKey=isSchedule?'routine':'proactive_chat',groupKey=isSchedule?'routine_overrides':'proactive_overrides';
       const box=section(isSchedule?'作息管理':'主动聊天',isSchedule?'睡眠时安静，正常时只参与已有话题，活跃时也可以主动找人聊。正常 @ 回复与原生未来任务照常；睡眠与活跃重叠时优先睡眠。':'每天按活跃总时长分配聊天机会，各份随机选一个时间。到点才尝试，机器人也可以选择不发；错过或失败的机会直接过去，第二天重新安排。');box.id='feature-settings';root.append(box);
@@ -505,7 +523,8 @@
       appendFields(box,obj,metas,[configKey],!!group);
       if(isSchedule){const strip=section('一天的作息');strip.id='schedule-preview';root.append(strip);scheduleStrip();agendaUI.render(root,group);}else renderPlaceholders(root,['proactive']);
     } else {
-      const box=section('聊天参考资料','设置判断模型和插件补充资料能读取多少聊天记录；不会删改 AstrBot 保存的聊天历史，也不替代聊天助手原本的上下文。没有文字说明的图片、音频等只保留类型标签。');box.id='context-settings';root.append(box);
+      const box=section('聊天参考资料','群消息优先读取 AstrBot 配置文件-扩展功能-群聊上下文感知-“持久化群聊消息记录”中的数据；不可用或为空时，依次改用框架待注入记录的只读副本、插件临时记录。条数上限跟随 AstrBot 配置文件-扩展功能-群聊上下文感知-“注入上下文最大消息数量”；超出长度限制时优先保留较新消息，详见决策回放。');box.id='context-settings';root.append(box);
+      box.append(el('p','建议在 AstrBot 的“群聊上下文感知”中开启“持久化群聊消息记录”，并按需开启“群聊消息记录注入上下文”。临时记录重载或重启后重新积累，不按活跃度统计时长清理。插件不会影响框架的功能；原会话历史、人格和工具仍由 AstrBot 正常提供。','muted'));
       appendFields(box,group?group.context_overrides:state.config.context,group?gs.context_overrides.items:state.schema.context.items,['context'],!!group);
       if(!group){const diag=section('运行记录与排查','执行阶段和文字快照始终临时采集，可查看请求、响应、工具结果与发送情况。快照可能包含聊天正文，已知密钥和媒体编码会隐藏，过长文字会标明缩减。');appendFields(diag,state.config.diagnostics,state.schema.diagnostics.items,['diagnostics']);root.append(diag);const resources=section('运行资源与超时','设置所有会话合计的并发额度。主动聊天额外总时限默认留空，模型和工具沿用主框架自身的限制；填写正整数才增加插件整轮时限，不影响智能插话的判断请求超时。');appendFields(resources,state.config.runtime,state.schema.runtime.items,['runtime']);root.append(resources);}
     }
@@ -514,11 +533,15 @@
     });
   }
   function renderScore(root) {
-    const box=section('用一组分数试试看','这只是试算，不调用模型、不发送消息，也不保存下面的示例分数。精力不是禁言开关；最终结果取决于当前权重和阈值。');box.id='score-lab';
+    const box=section('用一组分数试试看','调整示例分数和模拟权重，看看是否超过当前阈值。只在本页试算，不修改配置、不调用模型，也不发送消息。');box.id='score-lab';
+    const tools=el('div',undefined,'score-toolbar'),note=el('small');note.id='score-weight-note';
+    const reset=el('button','同步当前配置权重');reset.id='score-reset';reset.onclick=()=>{state.scoreCustom=false;drawScore();};tools.append(note,reset);box.append(tools);
     const sliders=el('div',undefined,'score-sliders');
     for(const [key,label] of [['model','模型判断'],['activity','群活跃'],['energy','机器人精力']]){
-      const wrap=el('label',label),input=el('input'),output=el('output',String(state.samples[key]));input.type='range';input.min=0;input.max=1;input.step=.01;input.value=state.samples[key];input.setAttribute('aria-label','试算'+label);
-      input.oninput=()=>{state.samples[key]=Number(input.value);output.textContent=input.value;drawScore();};wrap.append(input,output);sliders.append(wrap);
+      const card=el('div',undefined,'score-card'),wrap=el('label'),caption=el('span',label),input=el('input'),output=el('output',String(state.samples[key]));input.type='range';input.min=0;input.max=1;input.step=.01;input.value=state.samples[key];input.setAttribute('aria-label','试算'+label);
+      input.oninput=()=>{state.samples[key]=Number(input.value);output.textContent=input.value;drawScore();};wrap.append(caption,output,input);
+      const weightLabel=el('label',undefined,'score-weight'),weight=el('input');weight.id='score-weight-'+key;weight.type='number';weight.step='any';weight.setAttribute('aria-label',label+'模拟权重');weight.placeholder='等待当前配置';
+      weight.oninput=()=>{state.scoreCustom=true;state.scoreWeights??={};state.scoreWeights[key]=weight.value;drawScore();};weightLabel.append(el('span','模拟权重'),weight);card.append(wrap,weightLabel);sliders.append(card);
     }
     const result=el('div');result.id='score-result';box.append(sliders,result);root.append(box);drawScore();
   }
@@ -529,10 +552,18 @@
   }
   function drawScore() {
     const box=$('score-result');if(!box)return;box.replaceChildren();const cfg=state.effective?.interjection;
-    if(!cfg){box.append(el('p','等待计算当前生效参数…'));return;}
-    const weights=cfg.weights,denom=Object.values(weights).reduce((a,b)=>a+Math.abs(Number(b)),0);
+    $('score-reset').disabled=!cfg;
+    if(!cfg){box.append(el('p','等待读取当前范围的草稿参数…'));return;}
+    const scope=state.scope<0?state.config:state.config.session_groups[state.scope];
+    if(state.scoreScope!==scope){state.scoreScope=scope;state.scoreCustom=false;}
+    if(!state.scoreCustom)state.scoreWeights={...cfg.weights};
+    const weights=state.scoreWeights;
+    for(const key of ['model','activity','energy']){const input=$('score-weight-'+key);if(document.activeElement!==input)input.value=weights[key]??'';}
+    $('score-weight-note').textContent=state.scoreCustom?'使用模拟权重 · 不影响真实设置':'权重来自当前范围的草稿（含继承值）';
+    if(['model','activity','energy'].some(key=>String(weights[key]??'').trim()===''||!Number.isFinite(Number(weights[key])))){box.append(el('p','请填写三个有效的模拟权重，可为负数或零。','warning'));return;}
+    const denom=Object.values(weights).reduce((a,b)=>a+Math.abs(Number(b)),0);
     if(!denom||!Number.isFinite(denom)){box.append(el('p','请先设置至少一个非零的有效权重。','warning'));return;}
-    let score=0;const table=el('table'),head=el('tr');['评分项目','示例分数','当前权重','计入总分的分值'].forEach(x=>head.append(el('th',x)));table.append(head);
+    let score=0;const table=el('table'),head=el('tr');table.className='score-table';['评分项目','示例分数','模拟权重','计入总分'].forEach(x=>head.append(el('th',x)));table.append(head);
     for(const [key,label] of [['model','模型'],['activity','活跃'],['energy','精力']]){const w=Number(weights[key]),raw=state.samples[key],weighted=Math.abs(w)*(w<0?1-raw:raw);score+=weighted;const tr=el('tr');[label,raw,w,(weighted/denom).toFixed(4)].forEach(x=>tr.append(el('td',String(x))));table.append(tr);}
     score=Math.max(0,Math.min(1,score/denom));
     const threshold=Number(cfg.threshold),hit=score>threshold&&Math.abs(score-threshold)>1e-12;
@@ -543,14 +574,14 @@
   const phaseLabels={decision:'判断提示词／判断补充模板',activation:'智能插话发言提示词',proactive:'主动聊天提示词／任务说明'};
   function renderPlaceholders(root,phases) {
     const box=section('占位符大全','占位符就像自动填空：运行时会换成这次会话的真实内容。复制时要保留两侧花括号，不需要懂代码。');box.id='placeholder-panel';
-    const target=el('p','先点一个提示词输入框，便可把适用的占位符直接插入光标位置。','muted');target.id='placeholder-target';
+    const target=el('span','先点一个提示词输入框，便可把适用的占位符直接插入光标位置。');target.id='placeholder-target';box.querySelector('p.muted').append(document.createTextNode(' '),target);
     const search=el('input');search.type='search';search.placeholder='搜索用途或名称，例如“时间”“精力”';search.setAttribute('aria-label','搜索占位符');const list=el('div',undefined,'placeholder-grid');
     function draw(){list.replaceChildren();const q=search.value.trim().toLowerCase();const rows=state.placeholders.filter(p=>p.phases.some(x=>phases.includes(x))&&(!q||(p.name+p.description).toLowerCase().includes(q)));
       for(const p of rows){const card=el('article',undefined,'placeholder-card');const heading=el('div',undefined,'placeholder-heading');heading.append(el('code',p.token),help(p.name||p.token,'示例：'+p.example));card.append(heading,el('p',p.description));const allowed=p.phases.filter(x=>phases.includes(x));card.append(el('small','可用于：'+allowed.map(x=>phaseLabels[x]).join('；'),'allowed-phases'));
         const actions=el('div',undefined,'actions'),copy=el('button','复制'),insert=el('button','插入');copy.setAttribute('aria-label','复制 '+p.token);copy.onclick=()=>copyText(p.token,notice);
         insert.dataset.insertPhases=JSON.stringify(p.phases);insert.setAttribute('aria-label','插入 '+p.token);insert.disabled=true;insert.onclick=()=>{const f=state.templateFocus;if(!f||!f.input.isConnected||!p.phases.includes(f.phase))return;f.input.setRangeText(p.token,f.input.selectionStart??f.input.value.length,f.input.selectionEnd??f.input.value.length,'end');f.input.dispatchEvent(new Event('input',{bubbles:true}));f.input.focus();notice('已插入 '+p.token+'；保存后生效。');};actions.append(copy,insert);card.append(actions);list.append(card);}
       if(!rows.length)list.append(el('p','没有匹配的占位符，试试其他关键词。'));updatePlaceholderTarget();}
-    search.oninput=draw;box.append(target,search,list);root.append(box);draw();
+    search.oninput=draw;box.append(search,list);root.append(box);draw();
   }
   function updatePlaceholderTarget(){const target=$('placeholder-target'),f=state.templateFocus;if(target)target.textContent=f?'插入位置：'+f.label+'。不适用于该输入框的“插入”按钮会禁用。':'先点一个提示词输入框，再点击“插入”；也可以只复制后自行粘贴。';document.querySelectorAll('[data-insert-phases]').forEach(n=>n.disabled=!f||!f.input.isConnected||!JSON.parse(n.dataset.insertPhases).includes(f.phase));}
   function scheduleStrip() { scheduleView.render(); }
@@ -574,6 +605,7 @@
     const runId=state.run.run_id,index=state.step,seq=++state.traceSeq;detail.replaceChildren(el('p','正在读取这一步…','muted'));
     api('trace',undefined,{run_id:runId,step:index}).then(step=>{
       if(seq!==state.traceSeq||state.tab!=='traces')return;detail.replaceChildren(el('h3',step.label),el('small',new Date(step.at*1000).toLocaleString()+' · '+step.state));
+      if(typeof step.data?.explanation==='string')detail.append(el('p',step.data.explanation,'trace-explanation'));
       if(step.data?.score?.final!==undefined){const score=step.data.score;detail.append(el('p','最终分 '+displayScore(Number(score.final),Number(step.data.threshold))+(step.data.triggered?' > ':' ≤ ')+'阈值 '+step.data.threshold,'score-outcome'));}
       if(step.data?.phase_label){const d=step.data;detail.append(el('p','阶段：'+d.phase_label+' · 本阶段 '+d.phase_seconds+' 秒 · 执行 '+d.execution_seconds+' 秒 · '+(d.timeout_seconds==null?'跟随主框架，无插件整轮截止时间':'插件整轮上限 '+d.timeout_seconds+' 秒')));detail.append(el('p','模型调用 '+d.provider_calls+' 次 · 工具调用 '+d.tool_calls+' 次 · '+(d.sent?'已确认发送':'尚未确认发送')));if(d.outcome)detail.append(el('p',d.outcome));}
       if(step.data!==undefined){const copy=el('button','复制这一步');copy.onclick=()=>copyText(JSON.stringify(step.data,null,2),notice);detail.append(copy,el('pre',JSON.stringify(step.data,null,2)));}
@@ -637,30 +669,30 @@
   };
   async function startTour() {
     if(!state.config||state.busy||state.tour)return;
-    state.tour=true;const previous={tab:state.tab,scope:state.scope};
+    state.tour=true;const previous={tab:state.tab,scope:state.scope,restore:preserveView()};
     const steps=[
-      ['overview','overview-intro','两种开口方式','智能插话回应正在进行的话题；主动聊天在合适的时间主动找人聊天。教程只介绍，不会发送消息。'],
-      ['groups','groups-intro','先决定在哪些会话生效','建议先添加一个测试组，填入测试会话的 SID（会话地址）。只要添加了组，插件就只在组内会话生效；没有任何组时，范围是所有支持的已知会话。排序只调整列表位置，保存后生效。'],
-      ['overview','global-switch','总开关始终有效','最上方“启用主动会话插件”关闭时，所有会话都停止。本组“开启／关闭”只覆盖相应的智能插话、主动聊天或日程功能开关；选择“跟随全局”则使用对应默认值。'],
-      ['interjection','score-lab','分数不是发言概率','用示例滑块观察权重与阈值。精力为零只是这一项低，并不一定阻止插话。等于阈值不触发。'],
-      ['interjection','feature-settings','判断和说话是两步','“判断提示词”指导模型打分；“智能插话发言提示词列表”指导机器人如何接话。顶部可切换会话组，单独填写判断提示词和补充模板；留空跟随全局，醒目的徽标标出本组覆盖。'],
-      ['interjection','placeholder-panel','不用背占位符','点击提示词输入框，底部临时助手只显示这个输入框可用的占位符。点击插入光标位置，有选中文字则替换；Esc 收起。这里的大全可以查说明与示例。'],
-      ['schedule','schedule-preview','看懂一天的作息','睡眠时安静，正常时只智能插话，活跃时也会主动找人聊。每天把有效活跃时间分成若干份，每份随机预约一次；错过或失败的机会当天结束。细竖线显示所选会话实际预约，点一下可看时间和结果；蓝色标记是现在。一个组有多个会话时，可用下拉框切换。色带与预约点都展示已生效的设置；配置草稿保存后才会改变作息。'],
-      ['schedule','agenda-settings','先从一条午休开始','开启日程功能，添加午休，选起止时间和重复方式；每周可以勾选多天。按需要暂停插件插话或主动聊天；都不勾选时只让机器人知道。不创建或拦截原生未来任务。'],
-      ['schedule','agenda-calendar','日程独立保存，日历展示已保存安排','添加或编辑日程后，点弹窗里的“保存日程”就保存了，无需再点顶部保存。删除、排除和恢复继承也直接保存。日历按已生效的设置计算；开关、时区和会话组等配置仍需点顶部“保存并生效”。'],
-      ['context','context-settings','判断材料不必越多越好','复用已有文字与图片转述，按预算去掉较旧材料。这里不会删改原生历史，真正发言仍由 AstrBot 原来的聊天助手完成。'],
-      ['traces','trace-intro','看懂为什么没有开口','选一轮运行，点击“刷新记录”更新阶段和耗时。已发送或正常完成但未发送均占用一次每日主动额度。等待模型、一次尝试未成功、整轮最终失败和因睡眠放弃发送是不同情况；可按会话组、部分 SID、事件类型、执行结果和时间筛选。筛选和自动刷新开关会按登录账号自动记住，重新打开也会恢复，不用保存配置。刷新会保留阅读位置。同一次模型或工具调用的开始、结果和耗时合在一步中；不同次调用分别记录。关键判断用金色提示，发送成功为绿色，异常为红色。单轮最多保存 1000 步，较长记录可点“继续显示”；保留时间和总容量也会影响可查看的内容。文字快照始终临时采集。']
+      ['overview','overview-intro','先分清两种功能','智能插话：接上群里正在聊的话题。主动聊天：在合适时间主动找人聊。回复仍由原会话的聊天助手生成；正常 @ 和命令照常。教程不改配置，也不发送消息。'],
+      ['groups','groups-intro','先用一个测试会话','先与机器人正常聊一次，再由管理员发送 /active_status 复制完整 SID（会话地址），填入测试组。添加组后只在组内会话生效；不添加任何组则对所有支持的已知会话生效。'],
+      ['interjection','judgment-settings','先把判断模型配好','使用智能插话前，关闭 AstrBot 自带的“主动回复”。在全局设置中选择已配置的 LLM，或填写兼容 Jev 的服务和密钥。判断模型只打分，原会话的聊天模型负责回复；仅用主动聊天不需要配置判断模型。'],
+      ['context','context-settings','聊天记录自动选择备用来源','建议在框架“群聊上下文感知”中开启“持久化群聊消息记录”。未开启、读取失败或记录为空时，会依次尝试框架待注入记录的只读副本、插件临时记录，不会取走或清空框架记录。条数跟随“注入上下文最大消息数量”，超长优先保留新消息；详情见回放。'],
+      ['overview','global-switch','确认范围，再保存并开启','配置好测试会话后，打开插件总开关和需要的功能，点击顶部“保存并生效”。顶部可切换全局或会话组；本组“跟随全局”沿用通用设置，“开启／关闭”只影响对应功能。总开关关闭时，所有范围都停止。'],
+      ['interjection','score-lab','先试算，再调真实参数','模拟权重默认取当前范围的草稿，可填负数，不会改动真实配置。负权重会先把该项分数变成 1 减原分。总分必须高于阈值才算通过；0.7 不是 70% 的概率，精力为零也不等于禁言。'],
+      ['interjection','activation-settings','决定机器人怎样接话','判断提示词指导打分，发言提示词指导如何接话。多套发言提示词随机选用，本组留空跟随全局。点输入框可打开占位符助手，点选插入、Esc 收起；修改后需要保存。'],
+      ['schedule','schedule-preview','作息决定什么时候可以开口','睡眠暂停插话和主动聊天；正常时可插话，活跃时也可主动聊天。竖线是所选会话已预约的机会，点击查看时间和结果；每天随机安排，不能保证每次都发。作息不限制正常 @ 回复，也不拦截原生未来任务。'],
+      ['schedule','agenda-settings','先试一条日程','日程让机器人知道安排，也可按需暂停插话或主动聊天。点击弹窗“保存日程”立即生效；删除、排除也直接保存，不用再点顶部保存。日程不等于准时提醒；提醒请用框架未来任务。'],
+      ['schedule','agenda-calendar','进阶：日程与连续自拍','搭配图片生成插件，先让机器人用日程工具安排未来几天的穿搭和活动。之后每天在同一会话说“给我一张自拍”，观察服装、场景和动作是否随安排变化，且与当天日程一致。需开启日程自动背景并配置自拍工具；具体效果取决于模型，详细用法见 README。'],
+      ['traces','trace-intro','没有说话，先看这里','选一轮运行，再看每一步：用了哪些记录、是否回退、分数是否通过、是否成功发送。金色提示判断或注意事项，绿色表示发送成功，红色表示异常。可筛选会话和时间，刷新保留阅读位置；记录重载后清空，分享前检查聊天隐私。']
     ];
     try{
       for(let i=0;i<steps.length;){
         const [tab,target,title,message]=steps[i];state.scope=-1;state.effective=null;selectTab(tab,false);
-        const n=$(target);n?.classList.add('tutorial-target');n?.scrollIntoView({block:'center'});
+        const n=$(target);n?.classList.add('tutorial-target');n?.scrollIntoView({block:'start'});
         const next=await dialog({title:(i+1)+' / '+steps.length+'  '+title,message,confirm:i===steps.length-1?'我知道了':'下一步',cancel:'跳过教程',back:'上一步',backDisabled:i===0,highlight:n});
         n?.classList.remove('tutorial-target');if(!next)break;
         i+=next==='back'?-1:1;
       }
       persistPrefs({tutorial_seen:true});
-    } finally {state.tour=false;state.scope=previous.scope;state.effective=null;selectTab(previous.tab,false);}
+    } finally {state.tour=false;state.scope=previous.scope;state.effective=null;selectTab(previous.tab,false);previous.restore();}
   }
   $('tutorial').onclick=startTour;
   async function init() {

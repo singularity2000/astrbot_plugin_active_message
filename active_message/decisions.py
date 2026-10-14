@@ -99,6 +99,9 @@ def prepare_request(config: DecisionConfig, values: dict) -> tuple[str, str, dic
         metrics = {"input_chars": len(combined), "input_bytes": len(combined.encode("utf-8")),
                    "estimated_tokens": estimate_tokens(combined), "max_chars": config.max_input_chars,
                    "max_tokens": config.max_input_tokens, "budget_removed_records": removed,
+                   "history_submitted": len(payload.get("conversation_history", [])),
+                   "recent_submitted": len(payload.get("recent_group_messages", [])),
+                   "explanation": f"判断请求已准备：群消息 {len(payload.get('recent_group_messages', []))} 条、对话历史 {len(payload.get('conversation_history', []))} 条；合并提示词后另移除 {removed} 条较旧资料。",
                    "token_count_kind": "conservative_estimate"}
         if not over_budget(combined, config.max_input_chars, config.max_input_tokens):
             return instructions, state, metrics

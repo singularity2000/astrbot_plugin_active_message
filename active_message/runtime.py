@@ -36,7 +36,8 @@ class RuntimeStore:
             if now - timestamp <= config.energy_window_seconds
         ][-config.max_recent_messages:]
 
-    def incoming(self, sid: str, observation: MessageObservation, config: PluginConfig) -> bool:
+    def incoming(self, sid: str, observation: MessageObservation, config: PluginConfig,
+                 *, context_limit: int = 1000) -> bool:
         seen = self.seen_incoming.setdefault(sid, [])
         if observation.message_id and observation.message_id in seen:
             return False
@@ -45,6 +46,8 @@ class RuntimeStore:
         state = self.get(sid)
         state.last_human_at = observation.timestamp
         state.recent_human.append(observation)
+        state.recent_context.append(observation)
+        del state.recent_context[:-max(1, context_limit)]
         self.unreplied[sid] = 0
         self.prune(state, config, observation.timestamp)
         return True
