@@ -1,6 +1,8 @@
 """原生 Agent 主动聊天、发送限制、执行阶段跟踪与取消清理。"""
 from __future__ import annotations
 
+from .i18n import catalog
+
 import copy
 import json
 import asyncio
@@ -42,7 +44,14 @@ class SessionBoundSendTool(FunctionTool):
     """仅替换本次请求的发送工具；不修改全局工具实例或核心源码。"""
 
     def __init__(self, original: Any, plugin: Any, sid: str, feature: str = "proactive") -> None:
-        super().__init__(name=original.name, description=original.description,
+        description = original.description
+        if feature == "proactive":
+            description += (
+                "\nFor this proactive turn, sending is the final step. Complete any other work first. "
+                "Include all text and media in one messages array. A successful send ends this turn "
+                "without another model request. Do not send a separate execution report."
+            )
+        super().__init__(name=original.name, description=description,
                          parameters=copy.deepcopy(original.parameters), active=original.active)
         self.original = original
         self.plugin = plugin
@@ -82,6 +91,7 @@ class SessionBoundSendTool(FunctionTool):
         progress = meta.get("progress")
         if progress:
             progress.outcome = "主动发送已放弃：" + reason
+            progress.result = "skipped"
         self.plugin.observer.log(
             "info", "PROACTIVE_SEND_SKIPPED", sid=self.sid, run_id=meta.get("run_id"),
             reason=reason, checkpoint=checkpoint, tool=self.name,
@@ -91,6 +101,8 @@ class SessionBoundSendTool(FunctionTool):
 
     async def call(self, context: Any, **kwargs: Any) -> Any:
         event = context.context.event
+        if self.feature == "proactive" and event.get_extra("_active_message_terminal_send", False):
+            return None  # Do not deliver a repeated send in the same tool batch.
         target = str(kwargs.get("session") or self.sid)
         if target == self.sid.split(":", 2)[2]:
             target = self.sid
@@ -124,6 +136,21 @@ class SessionBoundSendTool(FunctionTool):
                 # interrupt this return path; the later hook becomes a no-op.
                 await self.plugin._record_sent(
                     event, f"tool:{id(event)}:{event.get_extra('_active_message_send_seq', 0)}")
+                if self.feature == "proactive":
+                    delivered = event.get_extra("_active_message_delivered", [])
+                    for item in kwargs.get("messages", []):
+                        if isinstance(item, dict):
+                            delivered.append(str(item.get("text", "")) if item.get("type") == "plain"
+                                             else "[" + str(item.get("type", "media")) + "]")
+                    event.set_extra("_active_message_delivered", delivered)
+                    event.set_extra("_active_message_terminal_send", True)
+                    self.plugin._capture(meta["run_id"], "发送完成，正常结束本轮", {
+                        "result": tool_response_text(result), "sent": True, "completion": "tool_sent",
+                    }, tone="success")
+                    # Native FunctionToolExecutor + ToolLoopAgentRunner treat a
+                    # None tool result as a direct-send completion. They finish
+                    # the tool round, including hooks, without another LLM call.
+                    return None
             elif tool_response_text(result).lower().startswith("error"):
                 progress.failure("PROACTIVE_TOOL_FAILED", tool=self.name, send_returned_error=True)
             progress.enter("tool", tool=self.name)
@@ -166,18 +193,22 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
     async with session_lock_manager.acquire_lock(sid):
         progress.enter("checks")
         if meta.get("scheduled_date", plugin._now(sid).date().isoformat()) != plugin._now(sid).date().isoformat():
+            progress.result = "skipped"
             progress.outcome = "跳过：这次预约属于前一天"
             return
         if not plugin.proactive_allowed_now(sid) or not session_allows_plugin(context, sid, plugin.PLUGIN_ID):
+            progress.result = "skipped"
             progress.outcome = "跳过：运行条件已变化"
             plugin.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid, run_id=meta["run_id"])
             return
         if not await SessionServiceManager.should_process_llm_request(event):
+            progress.result = "skipped"
             progress.outcome = "跳过：会话 LLM 已关闭"
             plugin.observer.log("info", "SESSION_LLM_DISABLED", sid=sid, run_id=meta["run_id"])
             return
         cfg = context.get_config(umo=sid)
         if cfg.get("agent_runner", {}).get("runner_type", "local") != "local":
+            progress.result = "skipped"
             progress.outcome = "跳过：不支持的 Agent 类型"
             plugin.observer.log("warning", "PROACTIVE_RUNNER_UNSUPPORTED", sid=sid, run_id=meta["run_id"])
             return
@@ -209,7 +240,11 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
         values.update(model_score="不适用", score="不适用", decision_reason="定时主动聊天")
         meta["values"] = values
         request = ProviderRequest(
-            prompt=render_template(config.proactive_task_prompt, values) + "\n若要发送，必须使用 send_message_to_user；只能发送至当前 SID。",
+            prompt=render_template(config.proactive_task_prompt, values) + (
+                "\n若要发送，必须使用 send_message_to_user；只能发送至当前 SID。"
+                "先完成所需查询或其他工具操作，再把本轮文字和媒体合并交给发送工具；发送成功会正常结束本轮。"
+                "若决定不发送，请用简短、非空的内部结论结束；内部结论不会发送给用户。"
+            ),
             conversation=conversation,
             contexts=json.loads(conversation.history or "[]"),
             func_tool=ToolSet(),
@@ -227,6 +262,7 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
         try:
             progress.enter("request_hooks")
             if await call_event_hook(event, EventType.OnLLMRequestEvent, result.provider_request):
+                progress.result = "skipped"
                 progress.outcome = "跳过：原生请求钩子停止执行"
                 return
             # Bind just this request's sender tool after the native hooks/build,
@@ -257,7 +293,9 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
                 raise NativeAgentError("NATIVE_AGENT_ERROR")
             if getattr(getattr(runner, "state", None), "name", "") != "DONE":
                 raise NativeAgentError("NATIVE_AGENT_NOT_COMPLETED")
-            summary = "[主动会话] " + (getattr(response, "completion_text", "") or "本次未产生最终文本。")
+            delivered = event.get_extra("_active_message_delivered", [])
+            summary = "[主动会话] " + ("\n".join(delivered) if delivered else
+                                      getattr(response, "completion_text", "") or "本轮未发送消息。")
             progress.enter("history")
             await persist_agent_history(context.conversation_manager, event=event, req=result.provider_request, summary_note=summary)
             plugin.traces.add(meta["run_id"], "主动任务历史已交由原生接口保存", {"conversation_id":getattr(conversation,"cid",None)})
@@ -273,6 +311,7 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
             progress.enter("complete")
             # 不依赖任何第三方“不回复”工具；只认原生 Agent 的整轮完成状态。
             progress.completed = not bool(suppression_reason)
+            progress.result = "completed" if progress.completed else "skipped"
         finally:
             try:
                 if reset is not None:
@@ -299,17 +338,7 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
                     plugin.runtime.get(sid).agent_active = False
 
 
-PHASES = {
-    "queue": "等待主动任务名额", "session_lock": "等待原生会话锁",
-    "checks": "检查会话运行条件", "conversation": "读取原生对话分支",
-    "context": "准备人格与聊天参考资料", "build": "构建原生 Agent",
-    "request_hooks": "执行原生请求钩子", "reset": "初始化原生 Agent",
-    "agent": "原生 Agent 调度／重试", "context_processing": "原生上下文整理／压缩",
-    "agent_hooks": "执行原生 Agent／工具钩子",
-    "llm": "等待聊天模型返回", "tool": "执行原生工具",
-    "send": "执行原生发送工具（含媒体准备及平台发送）",
-    "history": "保存原生对话历史", "complete": "执行结束",
-}
+PHASES = catalog()["phases"]
 
 
 class NativeAgentError(RuntimeError):
@@ -317,8 +346,9 @@ class NativeAgentError(RuntimeError):
 
 
 class RunProgress:
-    def __init__(self, observer: Any, sid: str, run_id: str, timeout: float | None) -> None:
+    def __init__(self, observer: Any, sid: str, run_id: str, timeout: float | None, *, capture=None) -> None:
         self.observer, self.sid, self.run_id = observer, sid, run_id
+        self.capture = capture
         self.started = self.phase_started = time.monotonic()
         self.phase = "queue"
         self.details: dict[str, Any] = {}
@@ -329,6 +359,7 @@ class RunProgress:
         self.sent = False
         self.completed = False
         self.outcome = ""
+        self.result = "failed"
         self.last_failure: dict[str, Any] | None = None
         self.deadline_at: float | None = None
         self.active_tools: set[asyncio.Task] = set()
@@ -394,7 +425,7 @@ class RunProgress:
                 "provider_calls": self.calls, "tool_calls": self.tools,
                 "tracked_tools_cleanup_completed": self.cleanup_completed,
                 "cleanup_seconds": self.cleanup_seconds,
-                "sent": self.sent, **self.details,
+                "sent": self.sent, "result": self.result, **self.details,
                 **({"last_failure": self.last_failure} if self.last_failure else {})}
 
     def failure(self, code: str, exc: BaseException | None = None, **fields: Any) -> None:
@@ -438,6 +469,13 @@ class _ObservedProvider(_Delegate):
         p.emit("PROACTIVE_LLM_FINISHED", **p.details, response_role=role,
                call_seconds=round(time.monotonic() - start, 3),
                requested_tools=len(getattr(response, "tools_call_name", None) or []))
+        if p.capture is not None:
+            p.capture(p.run_id, "第 " + str(p.calls) + " 次模型调用", {
+                "response": {"role": role, "text": getattr(response, "completion_text", ""),
+                             "reasoning": getattr(response, "reasoning_content", None),
+                             "tool_names": getattr(response, "tools_call_name", []) or [],
+                             "tool_arguments": getattr(response, "tools_call_args", []) or []},
+            }, key="llm:" + str(p.calls), tone="warning" if role == "err" else "response")
         if role == "err":
             p.failure("PROACTIVE_LLM_ATTEMPT_ERROR", response_role="err")
         p.enter("agent")

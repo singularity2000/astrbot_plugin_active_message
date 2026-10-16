@@ -1,6 +1,7 @@
 /* Local-only UI primitives. No native alert/confirm/prompt and no external assets. */
 (() => {
   'use strict';
+  const {t,runtime:R,value:V}=window.ActiveMessageI18n;
   const node = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined)n.textContent=text; if(cls)n.className=cls; return n; };
   // A single floating surface keeps help out of layout, including inside dialogs.
   const helpPopup=node('aside',undefined,'help-popup');helpPopup.id='help-popup';helpPopup.hidden=true;helpPopup.setAttribute('role','tooltip');
@@ -44,7 +45,7 @@
     if(triggerText===undefined){const icon=node('span','?','help-icon');icon.setAttribute('aria-hidden','true');button.append(icon);}
     else{button.textContent=triggerText;button.classList.add('help-tag','tag');}
     description.id=id||'help-description-'+(++helpSerial);
-    button.setAttribute('aria-label',label+'的说明');button.setAttribute('aria-describedby',description.id);button.setAttribute('aria-controls','help-popup');button.setAttribute('aria-expanded','false');
+    button.setAttribute('aria-label',label+t("pages.console.ui.sfd33aae360"));button.setAttribute('aria-describedby',description.id);button.setAttribute('aria-controls','help-popup');button.setAttribute('aria-expanded','false');
     const item={button,label,text,hovered:false};
     button.addEventListener('pointerenter',event=>{if(event.pointerType!=='mouse')return;item.hovered=true;showHelp(item);});
     button.addEventListener('pointerleave',()=>{item.hovered=false;deferHelpClose();});
@@ -102,7 +103,7 @@
       requestAnimationFrame(()=>{if(viewRestores.get(root)===ticket&&root.dataset.view===view&&Math.abs(scrollY-y)<2&&Math.abs(scrollX-x)<2)restore();});
     };
   }
-  function dialog({title, message='', confirm='确定', cancel='取消', danger=false, content=null, highlight=null, validate=null, submit=null, back=null, backDisabled=false}) {
+  function dialog({title, message='', confirm=t("pages.console.ui.sf526c89937"), cancel=t("pages.console.ui.s4d0b4688c7"), danger=false, content=null, highlight=null, validate=null, submit=null, back=null, backDisabled=false}) {
     if(activeDialog)return Promise.resolve(false);
     activeDialog=true;document.dispatchEvent(new Event("active-message-dialog-open"));
     return new Promise(resolve=>{
@@ -129,8 +130,8 @@
         if(!submit){close(true);return;}
         pending=true;failure.hidden=true;
         const controls=[...box.querySelectorAll('button,input,textarea,select')],disabled=controls.map(n=>n.disabled);
-        controls.forEach(n=>n.disabled=true);yes.textContent='正在保存…';
-        try{await submit();close(true);}catch(error){failure.textContent=error.message||'保存失败，请重试。';failure.hidden=false;failure.scrollIntoView({block:'nearest'});}
+        controls.forEach(n=>n.disabled=true);yes.textContent=t("pages.console.ui.s9ca32f988d");
+        try{await submit();close(true);}catch(error){failure.textContent=error.message||t("pages.console.ui.s28ecf45dc2");failure.hidden=false;failure.scrollIntoView({block:'nearest'});}
         finally{pending=false;controls.forEach((n,i)=>n.disabled=disabled[i]);yes.textContent=confirm;}
       };actions.append(no);
       if(back){const previousStep=node('button',back);previousStep.disabled=backDisabled;previousStep.onclick=()=>close('back');actions.classList.add('tour-actions');actions.append(previousStep);}
@@ -147,106 +148,29 @@
   }
   async function copyText(text, report) {
     // execCommand runs synchronously within the click gesture, including opaque-origin Pages frames.
-    const previous=document.activeElement, input=node('textarea');input.value=text;input.setAttribute('aria-label','待复制内容');
+    const previous=document.activeElement, input=node('textarea');input.value=text;input.setAttribute('aria-label',t("pages.console.ui.s3032d07987"));
     input.className='clipboard-buffer';document.body.append(input);input.focus({preventScroll:true});input.select();
     let copied=false;try{copied=document.execCommand('copy');}catch{}input.remove();previous?.focus?.({preventScroll:true});
     if(!copied&&navigator.clipboard?.writeText){try{await navigator.clipboard.writeText(text);copied=true;}catch{}}
-    if(copied){report('已复制。');return true;}
-    const manual=node('textarea');manual.value=text;manual.readOnly=true;manual.rows=5;manual.setAttribute('aria-label','手动复制内容');
-    await dialog({title:'请手动复制',message:'浏览器未允许自动复制。选择下方文字后使用 Ctrl+C（Mac 使用 Command+C）。',content:manual,confirm:'我知道了',cancel:'关闭'});
+    if(copied){report(t("pages.console.ui.sda8ca6bca3"));return true;}
+    const manual=node('textarea');manual.value=text;manual.readOnly=true;manual.rows=5;manual.setAttribute('aria-label',t("pages.console.ui.saad139e910"));
+    await dialog({title:t("pages.console.ui.s488b648d05"),message:t("pages.console.ui.s94f70b6db6"),content:manual,confirm:t("pages.console.ui.sdd3760c80a"),cancel:t("pages.console.ui.s6c14bd7f6f")});
     return false;
   }
-  let activeDateRange=null;
-  function dateRangePicker({start='',end='',today='',onChange}){
-    const wrap=node('div',undefined,'date-range-control'),from=node('input'),to=node('input'),pick=node('button','选日期'),clear=node('button','清空'),error=node('small',undefined,'warning');
-    const serial=++helpSerial,fromLabel=node('label','从'),toLabel=node('label','到');
-    from.id='date-range-from-'+serial;to.id='date-range-to-'+serial;fromLabel.htmlFor=from.id;toLabel.htmlFor=to.id;
-    for(const input of [from,to]){input.type='date';input.min='1900-01-01';input.max='2199-12-31';}
-    from.value=start;to.value=end;from.setAttribute('aria-label','筛选开始日期');to.setAttribute('aria-label','筛选结束日期');
-    pick.type=clear.type='button';error.hidden=true;error.setAttribute('role','status');
-    fromLabel.className=toLabel.className='date-range-endpoint';fromLabel.append(from);toLabel.append(to);
-    const buttons=node('div',undefined,'date-range-buttons');buttons.append(pick,clear);
-    wrap.append(fromLabel,toLabel,buttons,error);
-    let popup=null,observer=null,draftStart='',draftEnd='',hovered='',month='';
-    const iso=date=>date.toISOString().slice(0,10),date=value=>new Date(value+'T12:00:00Z');
-    const anchor=()=>((typeof today==='function'?today():today)||new Date().toLocaleDateString('sv-SE'));
-    function commit(a,b){
-      let message='';
-      if(!from.validity.valid||!to.validity.valid)message='日期需要在 1900～2199 年之间。';
-      else if(a&&b&&a>b)message='结束日期不能早于开始日期。';
-      error.textContent=message;error.hidden=!message;
-      if(message)return false;
-      onChange({start:a,end:b});return true;
+  function dateRangePicker({start='',end='',onChange}){
+    const wrap=node('div',undefined,'date-range-control'),from=node('input'),to=node('input'),clear=node('button',t("pages.console.ui.s84fcd70d42")),error=node('small',undefined,'warning');
+    const serial=++helpSerial;
+    for(const [input,value,label] of [[from,start,t("pages.console.ui.s8ab977960a")],[to,end,t("pages.console.ui.s792bbe6e08")]]){
+      input.type='date';input.min='1900-01-01';input.max='2199-12-31';input.value=value;
+      input.id='date-range-'+serial+'-'+label;input.setAttribute('aria-label',label===t("pages.console.ui.s8ab977960a")?t("pages.console.ui.s1f60132232"):t("pages.console.ui.s51d89b73e2"));
+      const field=node('label',label,'date-range-endpoint');field.htmlFor=input.id;field.append(input);wrap.append(field);
     }
-    from.onchange=to.onchange=()=>commit(from.value,to.value);
-    clear.onclick=()=>{from.value=to.value='';if(commit('',''))hide();};
-    function outside(event){if(!popup?.contains(event.target)&&!wrap.contains(event.target))hide();}
-    function escape(event){if(event.key==='Escape'){event.preventDefault();event.stopPropagation();hide();pick.focus();}}
-    function place(){
-      if(!popup)return;
-      const view=window.visualViewport,r=pick.getBoundingClientRect(),left=view?.offsetLeft||0,top=view?.offsetTop||0,width=view?.width||innerWidth,height=view?.height||innerHeight,margin=8;
-      popup.style.width=Math.min(310,width-2*margin)+'px';popup.style.maxHeight=Math.max(100,height-2*margin)+'px';
-      const h=popup.getBoundingClientRect().height,w=popup.getBoundingClientRect().width;
-      popup.style.left=Math.max(left+margin,Math.min(r.left,left+width-w-margin))+'px';
-      popup.style.top=Math.max(top+margin,Math.min(r.bottom+h+margin<=top+height?r.bottom+6:r.top-h-6,top+height-h-margin))+'px';
+    clear.type='button';error.hidden=true;error.setAttribute('role','status');wrap.append(clear,error);
+    function commit(){
+      const message=!from.validity.valid||!to.validity.valid?t("pages.console.ui.s281dbd5f95"):from.value&&to.value&&from.value>to.value?t("pages.console.ui.s229f1f76a2"):'';
+      error.textContent=message;error.hidden=!message;if(!message)onChange({start:from.value,end:to.value});
     }
-    function hide(){
-      if(!popup)return;
-      popup.remove();popup=null;observer?.disconnect();pick.setAttribute('aria-expanded','false');
-      document.removeEventListener('pointerdown',outside,true);document.removeEventListener('keydown',escape,true);document.removeEventListener('scroll',place,true);window.removeEventListener('resize',place);
-      window.visualViewport?.removeEventListener('resize',place);window.visualViewport?.removeEventListener('scroll',place);if(activeDateRange===hide)activeDateRange=null;
-    }
-    function move(delta){
-      const value=date(month+'-01');value.setUTCMonth(value.getUTCMonth()+delta);
-      if(value.getUTCFullYear()<1900||value.getUTCFullYear()>2199)return;
-      month=iso(value).slice(0,7);draw();
-    }
-    function draw(){
-      if(!popup)return;
-      const focusLabel=popup.contains(document.activeElement)?document.activeElement.getAttribute('aria-label'):null;
-      popup.replaceChildren();
-      const header=node('div',undefined,'date-range-header'),prev=node('button','‹'),next=node('button','›'),jump=node('input'),close=node('button','×');
-      prev.setAttribute('aria-label','范围日历上月');next.setAttribute('aria-label','范围日历下月');close.setAttribute('aria-label','关闭范围日历');
-      prev.disabled=month==='1900-01';next.disabled=month==='2199-12';prev.onclick=()=>move(-1);next.onclick=()=>move(1);close.onclick=hide;
-      jump.type='month';jump.min='1900-01';jump.max='2199-12';jump.value=month;jump.setAttribute('aria-label','范围日历月份');
-      jump.onchange=()=>{if(jump.value&&jump.validity.valid){month=jump.value;draw();}};header.append(prev,jump,next,close);popup.append(header);
-      const instruction=node('small','先点开始日期，再点结束日期；选一个日期也能应用。');popup.append(instruction);
-      const grid=node('div',undefined,'calendar-grid date-range-grid');
-      ['一','二','三','四','五','六','日'].forEach(day=>grid.append(node('span',day,'calendar-weekday')));
-      const first=date(month+'-01');first.setUTCDate(first.getUTCDate()-(first.getUTCDay()+6)%7);
-      const cells=[];
-      function shade(){
-        const boundary=draftEnd||hovered||draftStart,low=[draftStart,boundary].filter(Boolean).sort()[0],high=[draftStart,boundary].filter(Boolean).sort().at(-1);
-        for(const {button,value} of cells){const endpoint=value===draftStart||value===draftEnd;button.classList.toggle('range-endpoint',endpoint);button.classList.toggle('in-range',!!low&&value>=low&&value<=high);button.setAttribute('aria-pressed',String(endpoint));}
-      }
-      for(let index=0;index<42;index++){
-        const day=new Date(first);day.setUTCDate(day.getUTCDate()+index);const value=iso(day),button=node('button',String(day.getUTCDate()),'calendar-day');
-        button.type='button';button.dataset.date=value;button.setAttribute('aria-label',value);button.disabled=value<'1900-01-01'||value>'2199-12-31';
-        if(value.slice(0,7)!==month)button.classList.add('outside-month');if(value===anchor())button.classList.add('range-today');
-        button.onclick=()=>{if(!draftStart||draftEnd){draftStart=value;draftEnd='';}else{[draftStart,draftEnd]=[draftStart,value].sort();}hovered='';draw();};
-        button.onpointerenter=()=>{if(draftStart&&!draftEnd){hovered=value;shade();}};cells.push({button,value});grid.append(button);
-      }
-      grid.onpointerleave=()=>{hovered='';shade();};shade();popup.append(grid);
-      const shortcuts=node('div',undefined,'date-range-shortcuts');
-      for(const [label,kind] of [['今天','today'],['本周','week'],['本月','month']]){
-        const button=node('button',label);button.onclick=()=>{const a=date(anchor()),b=date(anchor());if(kind==='week'){a.setUTCDate(a.getUTCDate()-(a.getUTCDay()+6)%7);b.setTime(a.getTime());b.setUTCDate(b.getUTCDate()+6);}else if(kind==='month'){a.setUTCDate(1);b.setUTCMonth(b.getUTCMonth()+1,0);}draftStart=iso(a);draftEnd=iso(b);month=draftStart.slice(0,7);draw();};shortcuts.append(button);
-      }
-      popup.append(shortcuts,node('small',(draftStart||'不限开始')+' ～ '+(draftEnd||'不限结束'),'date-range-summary'));
-      const actions=node('div',undefined,'date-range-actions'),reset=node('button','清空'),apply=node('button','应用日期','primary');
-      reset.onclick=()=>{draftStart=draftEnd=hovered='';draw();};apply.onclick=()=>{from.value=draftStart;to.value=draftEnd;if(commit(draftStart,draftEnd))hide();};actions.append(reset,apply);popup.append(actions);place();
-      if(focusLabel)[...popup.querySelectorAll('[aria-label]')].find(item=>item.getAttribute('aria-label')===focusLabel)?.focus({preventScroll:true});
-    }
-    pick.setAttribute('aria-haspopup','dialog');pick.setAttribute('aria-expanded','false');
-    pick.onclick=()=>{
-      if(popup)return hide();activeDateRange?.();hideHelp();activeDateRange=hide;
-      draftStart=from.value;draftEnd=to.value;hovered='';month=(draftStart||draftEnd||anchor()).slice(0,7);
-      popup=node('div',undefined,'date-range-popup');popup.id='date-range-popup-'+serial;popup.setAttribute('role','dialog');popup.setAttribute('aria-label','筛选日期范围');pick.setAttribute('aria-controls',popup.id);pick.setAttribute('aria-expanded','true');document.body.append(popup);draw();
-      document.addEventListener('pointerdown',outside,true);document.addEventListener('keydown',escape,true);document.addEventListener('scroll',place,true);window.addEventListener('resize',place);
-      window.visualViewport?.addEventListener('resize',place);window.visualViewport?.addEventListener('scroll',place);
-      observer=new MutationObserver(()=>{if(!pick.isConnected||pick.closest('[hidden],[inert]'))hide();});observer.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','inert']});
-      popup.querySelector('input').focus();
-    };
-    return wrap;
+    from.onchange=to.onchange=commit;clear.onclick=()=>{from.value=to.value='';commit();};return wrap;
   }
   window.ActiveMessageUI={node,dialog,copyText,help,helpTag,helpNote,hideHelp,dateRangePicker,preserveView};
 })();

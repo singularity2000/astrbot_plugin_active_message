@@ -7,7 +7,8 @@ import re
 import math
 from pathlib import Path
 from dataclasses import dataclass
-from .config import PluginConfig
+from .config import PluginConfig, normalize_control_values
+from .i18n import localize_schema
 from .sessions import SessionScopes
 from .agenda import Agenda, config_only, event_schema, normalize_agenda_links, populate_agenda_choices
 from .prompts import validate_template
@@ -25,7 +26,7 @@ def schema():
     result["session_groups"]["templates"]["group"]["items"]["agenda_exclusions"] = {
         "type": "list", "description": "本组不使用的全局日程", "default": [],
         "options": [], "labels": []}
-    return result
+    return localize_schema(result)
 
 
 def shape_errors(raw, fields, prefix=""):
@@ -98,7 +99,7 @@ def fill_defaults(raw, fields, *, resets=None, prefix=""):
 
 def feature_enabled(mode, global_enabled):
     """Group choices override only the matching global feature switch, not the master."""
-    return True if mode == "开启" else False if mode == "关闭" else bool(global_enabled)
+    return True if mode == "enabled" else False if mode == "disabled" else bool(global_enabled)
 
 
 def blank(value):
@@ -120,7 +121,7 @@ def overlay(base, patch, fields):
                     value = int(number) if spec["type"] == "int" and number.is_integer() else number
                 except (ValueError, TypeError, OverflowError):
                     pass  # validate_config will report the exact field, without its value.
-            if key in {"sleep_hours", "active_hours"} and value == "无":
+            if key in {"sleep_hours", "active_hours"} and value in {"无", "none"}:
                 value = ""
             base[key] = copy.deepcopy(value)
 
@@ -139,6 +140,7 @@ class EffectiveSettings:
 
 class Settings:
     def __init__(self, raw):
+        raw = normalize_control_values(raw)
         # PageAPI binds both revisions when validating its draft. Main passes
         # them to AgendaStore.save; never infer fresh revisions at save time.
         self.agenda_revision: str | None = None
@@ -233,8 +235,8 @@ class Settings:
                 merged["activation_prompts"] = copy.deepcopy(inter["activation_prompts"])
             if not blank(item.get("cooldown_override")):
                 overlay(merged["interjection"], {"cooldown_seconds":item["cooldown_override"]}, self.schema["interjection"]["items"])
-            mode = item.get("decision_mode", "跟随全局")
-            if mode != "跟随全局":
+            mode = item.get("decision_mode", "inherit")
+            if mode != "inherit":
                 merged["interjection"]["decision"]["mode"] = mode
             inter_on = feature_enabled(group.interjection_mode, self.config.interjection_enabled)
             pro_on = feature_enabled(group.proactive_mode, self.config.proactive_enabled)
@@ -249,11 +251,11 @@ class Settings:
             merged["agenda"]["events"] = copy.deepcopy(global_events + local_events)
             merged["agenda"]["enabled"] = feature_enabled(item.get("agenda_mode"), global_raw["agenda"]["enabled"])
             for key in ("preview_days", "max_items"):
-                value = item.get("agenda_" + key, "跟随全局")
-                if value != "跟随全局":
+                value = item.get("agenda_" + key, "inherit")
+                if value != "inherit":
                     merged["agenda"][key] = value
             entry = self._entry(merged, {e["id"]: "本组" for e in local_events if isinstance(e["id"], str)})
-            if item.get("agenda_mode") not in {"跟随全局", "开启", "关闭"}:
+            if item.get("agenda_mode") not in {"inherit", "enabled", "disabled"}:
                 entry.errors["agenda"].append(("agenda_mode", "请选择跟随全局、开启或关闭。"))
             if len(local_events) > 100:
                 entry.errors["agenda"].append(("agenda.events", "每组最多 100 条新增日程。"))
@@ -262,7 +264,7 @@ class Settings:
                 entry.errors["agenda"].append(("agenda.events", "本组日程标识不能与全局重复，即使该全局日程已排除。"))
             self.groups.append(entry)
             for key in ("interjection_mode", "proactive_mode"):
-                if item.get(key) not in {"跟随全局", "开启", "关闭"}:
+                if item.get(key) not in {"inherit", "enabled", "disabled"}:
                     entry.errors["shared"].append((key, "请选择跟随全局、开启或关闭。"))
             self._by_identity[id(group)] = entry
 
@@ -365,12 +367,12 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
         if total_weight == 0 or not math.isfinite(total_weight):
             errors["interjection"].append(("interjection.weights", "至少一个权重必须不为零，绝对权重总和不能超出有限数值范围。"))
         for index, group in enumerate(config.groups):
-            if group.interjection_mode != "关闭":
+            if group.interjection_mode != "disabled":
                 check("interjection", f"session_groups[{index}].threshold_override", group.threshold,
                       "阈值须留空或填写 0～1 的有限数字。")
         for index, prompt in enumerate(config.activation_prompts):
             check("interjection", f"activation_prompts[{index}]", lambda p=prompt: validate_template(p),
-                  "存在未知占位符，请对照 README 的占位符列表。")
+                  "存在未知占位符，请查看控制台的占位符助手。")
         if config.model_weight:
             decision = config.decision
             if decision.mode not in {"llm", "jev"}:
@@ -388,8 +390,8 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
                       "存在未知占位符，或引用了判断完成后才有的分数、理由。")
     if config.proactive_enabled:
         for index, prompt in enumerate(config.proactive_prompts):
-            check("proactive", f"proactive_chat.prompts[{index}]", lambda p=prompt: validate_template(p), "存在未知占位符，请对照 README。")
-        check("proactive", "proactive_chat.task_prompt", lambda: validate_template(config.proactive_task_prompt), "存在未知占位符，请对照 README。")
+            check("proactive", f"proactive_chat.prompts[{index}]", lambda p=prompt: validate_template(p), "存在未知占位符，请查看控制台的占位符助手。")
+        check("proactive", "proactive_chat.task_prompt", lambda: validate_template(config.proactive_task_prompt), "存在未知占位符，请查看控制台的占位符助手。")
     if isinstance(raw, dict):
         rules = []
         if config.interjection_enabled:

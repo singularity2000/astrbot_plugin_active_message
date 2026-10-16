@@ -10,6 +10,8 @@ import time
 from .agenda import config_only, agenda_exclusions, normalize_agenda_links, event_schema, Agenda
 from .settings import Settings, shape_errors, schema
 from .prompts import placeholder_catalog
+from .diagnostics import MESSAGES, DIAGNOSTIC_ACTIONS
+from .i18n import catalogs
 
 KEEP_SECRET = "__ACTIVE_MESSAGE_KEEP_SECRET__"
 
@@ -33,7 +35,7 @@ class PageAPI:
             handler = getattr(self, name)
             self.handlers.append(handler)
             self.plugin.context.register_web_api(f"/{self.plugin.PLUGIN_ID}/{name}", handler,
-                ["POST"] if name in {"settings", "preview", "preferences", "redistribute", "agenda"} else ["GET"], "主动会话运行检查台")
+                ["POST"] if name in {"settings", "preview", "preferences", "redistribute", "agenda"} else ["GET"], "主动会话控制台")
 
     def unregister(self):
         registry = self.plugin.context.registered_web_apis
@@ -110,7 +112,11 @@ class PageAPI:
             return self._response({"config":config, "schema":metadata, "agenda_data":agenda_data,
                                    "revision":revision, "providers":providers, "errors":self.plugin.settings.blocking_errors(),
                                    "warnings":self.plugin.settings.warnings, "placeholders":placeholder_catalog(),
-                                   "preferences":await self._read_preferences(request.username)})
+                                   "preferences":await self._read_preferences(request.username), "translations": catalogs(),
+                                   "diagnostics":{code: {"message": message,
+                                       "action": DIAGNOSTIC_ACTIONS.get(code, ("", None))[0],
+                                       "tab": DIAGNOSTIC_ACTIONS.get(code, ("", None))[1]}
+                                       for code, message in MESSAGES.items()}})
         except (ValueError, PermissionError) as exc: return self._response(error=str(exc))
         except Exception:
             self.plugin.observer.log("warning", "PAGE_READ_FAILED", explanation="无法读取配置或 Provider 列表。")
@@ -119,6 +125,7 @@ class PageAPI:
     async def status(self):
         try:
             request = self._auth()
+            self.plugin.ensure_scheduler()
             schedule_sid = str(request.query.get("schedule_sid", ""))
             p = self.plugin
             sessions = []
@@ -146,7 +153,8 @@ class PageAPI:
                     "schedule":state.proactive_schedule if scheduled and sid == schedule_sid and state.proactive_schedule_date == today else [],
                     "schedule_timezone":str(now.tzinfo),
                     "reallocation":p.proactive_reallocation(sid) if sid == schedule_sid else None,
-                    "latest":p.observer.latest.get(sid), "errors":entry.errors})
+                    "latest":p.observer.latest.get(sid),
+                    "results":p.traces.latest_results.get(sid, {}), "errors":entry.errors})
             errors = p.settings.blocking_errors()
             if not p._state_valid:
                 errors["运行状态"] = {"shared":[["runtime_state.json", "恢复失败；请先备份、检查状态文件并重载。插件已暂停。"]]}
@@ -160,6 +168,9 @@ class PageAPI:
                 "groups":[{"index":i, "name":group.name, "key":"group:" + p.settings.raw["session_groups"][i]["agenda_id"]} for i, group in enumerate(p.plugin_config.groups)],
                 "warnings":p.settings.warnings,
                 "unresolved":p.scopes.unresolved(), "runs":runs, "capture_raw":p.traces.capture_raw,
+                "scheduler":{"running": bool(p._alarm.task and not p._alarm.task.done()),
+                             "last_tick_at": p._alarm.last_tick_at, "error": p._alarm.last_error,
+                             "stale": any(s["proactive"] and s["schedule_date"] != p._now(s["sid"]).date().isoformat() for s in sessions)},
                 "errors":errors})
         except PermissionError as exc: return self._response(error=str(exc))
         except Exception: return self._response(error="状态读取失败，请检查配置与服务状态。")
@@ -421,7 +432,8 @@ class PageAPI:
             data = await self._body()
             request = self._auth()
             allowed = {"tab": {"overview", "traces", "groups", "interjection", "proactive", "schedule", "context"},
-                       "theme": {"auto", "light", "dark"}, "tutorial_seen": {True, False}, "trace_live": {True, False}, "overview_live": {True, False}}
+                       "theme": {"auto", "light", "dark"}, "language": {"zh-CN", "en-US"},
+                       "tutorial_seen": {True, False}, "trace_live": {True, False}, "overview_live": {True, False}}
             patch = {}
             for key, value in data.items():
                 if key == "agenda_page_size":

@@ -144,12 +144,18 @@ def _next_boundary(now: datetime, boundaries: list[int]) -> datetime:
 
 
 class DeadlineAlarm:
+    # Reconcile clock changes/missed wakes without calling a model or resampling
+    # an already prepared day. Real deadlines still wake at their exact time.
+    MAX_WAIT_SECONDS = 300.0
+
     def __init__(self, tick: Callable[[], Awaitable[None]], next_delay: Callable[[], float | None], on_error):
         self.tick = tick
         self.next_delay = next_delay
         self.on_error = on_error
         self.changed = asyncio.Event()
         self.task: asyncio.Task | None = None
+        self.last_tick_at: float | None = None
+        self.last_error: str | None = None
 
     def start(self):
         if self.task is None or self.task.done():
@@ -169,17 +175,20 @@ class DeadlineAlarm:
             self.changed.clear()
             try:
                 await self.tick()
+                self.last_tick_at = datetime.now(timezone.utc).timestamp()
+                self.last_error = None
                 delay = self.next_delay()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.last_error = type(exc).__name__
                 self.on_error(exc)
-                # Exceptional retry only; healthy operation never polls periodically.
+                # Error retry is separate from the lightweight clock check.
                 delay = 60.0
             try:
                 if delay is None:
                     await self.changed.wait()
                 else:
-                    await asyncio.wait_for(self.changed.wait(), timeout=max(0.001, delay))
+                    await asyncio.wait_for(self.changed.wait(), timeout=min(self.MAX_WAIT_SECONDS, max(0.001, delay)))
             except TimeoutError:
                 pass

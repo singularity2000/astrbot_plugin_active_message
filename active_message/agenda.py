@@ -17,68 +17,24 @@ from typing import Any, Iterator
 from astrbot.api import FunctionTool
 from jsonschema import Draft202012Validator
 
+from .i18n import catalog
+from .config import normalize_control_values
 from .schedule import get_timezone
 from .storage import JsonStateFile
 
 
-# ============================================================================
-# Agent 函数工具文案编辑区
-# 下面的工具描述与参数说明会直接交给 LLM；修改文字即可调整 Agent 对工具的理解。
-# 编辑 description 文本即可。参数名、类型、必填项与允许值须和下方处理代码保持一致。
-# ============================================================================
+# Agent 工具文案统一在 .astrbot-plugin/i18n/en-US.json 的 tools 中编辑。
+# JSON Schema 结构和运行校验仍由下方代码维护。
 
 # 1. 查询日程：query_schedule
-QUERY_TOOL_DESCRIPTION = (
-    "查询你的日程。默认查看当前和未来安排；填写过去日期可查询过去。每条日程只返回一次，重复日程附重复说明，结果一次性全部返回。"
-    "日程是你需要知晓的背景信息，用于拟人化增强。"
-)
+QUERY_TOOL_DESCRIPTION = catalog("en-US")["tools"]["query_description"]
 
-QUERY_PARAMETERS = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "mode": {
-            "type": "string",
-            "enum": ["range", "catalog"],
-            "description": "range、catalog 均按日期范围查询，每条日程只返回一次，附重复说明；省略时使用 range。",
-        },
-        "start_date": {
-            "type": "string",
-            "description": "可选 YYYY-MM-DD，可填写过去日期；省略从现在开始，仅给过去的结束日期时查询截至该日的安排。",
-        },
-        "end_date": {
-            "type": "string",
-            "description": "可选 YYYY-MM-DD，包含当天，可填写过去日期；省略不限制结束日期。每条日程只返回范围内一次安排。",
-        },
-        "keyword": {
-            "type": "string",
-            "description": "可选，筛选日程的名称和说明。",
-        },
-    },
-}
+QUERY_PARAMETERS = catalog("en-US")["tools"]["query_parameters"]
 
-# 2. 创建日程：create_schedule
-CREATE_TOOL_DESCRIPTION = (
-    "为当前会话新增日程，成功立即保存，不创建定时提醒。日期和时间按当前会话时区解释。"
-    "可选字段按需填写；省略时由插件补默认值。无关字段请省略，不要传空字符串或 null（description 可为空字符串）。"
-)
+# 2. 管理日程：manage_schedule
+MANAGE_TOOL_DESCRIPTION = catalog("en-US")["tools"]["manage_description"]
 
-CREATE_PARAMETER_DESCRIPTIONS = {
-    "events": '必填，非空日程对象数组，如 [{"title":"阅读","start_date":"2026-10-12"}]；每项按下列字段填写，整批检查通过才保存。',
-    "title": "必填，非空日程名称，最多 80 字。",
-    "description": "可选，日程说明，最多 1000 字；省略则无说明。",
-    "start_date": "必填，开始日期 YYYY-MM-DD，年份 1900～2199；重复安排从当天起生效。",
-    "enabled": "可选；省略为 true，填 false 创建停用日程。",
-    "time_mode": "可选；普通日程省略为“全天”。选择“时段”必须提供起止时间；Cron 无需填写此项。",
-    "start_time": "普通“时段”必填，格式 HH:MM；全天和 Cron 省略。",
-    "end_time": "普通“时段”必填，格式 HH:MM；早于开始表示次日结束，不能与开始相同；全天和 Cron 省略。",
-    "repeat": "可选；省略为“不重复”。每天按日重复，每周按所选星期重复，每年按开始日期的月日重复，Cron 按表达式重复。",
-    "weekdays": '“每周”必填，至少一个星期字符串，如 ["周一","周五"]；其他重复方式省略。',
-    "cron": "“Cron”必填，五段“分 时 日 月 周”，如 0 7 * * * 表示每天 07:00；其他方式省略。",
-    "cron_duration_minutes": "仅 Cron 使用，可选整数 1～1440；省略时插件使用 60 分钟。",
-    "pause_interjection": "可选；true 在日程期间暂停智能插话，省略为 false。",
-    "pause_proactive": "可选；true 在日程期间暂停主动聊天，省略为 false。",
-}
+CREATE_PARAMETER_DESCRIPTIONS = catalog("en-US")["tools"]["create_fields"]
 
 # ============================================================================
 # 日程数据、时间规则与页面字段
@@ -355,7 +311,7 @@ class AgendaEvent:
                 "pause_interjection": self.pause_interjection, "pause_proactive": self.pause_proactive}
 
     def agent_record(self, start: datetime, end: datetime) -> dict:
-        result = {"title": self.title, "start": start.isoformat(), "end": end.isoformat()}
+        result = {"id": self.id, "title": self.title, "start": start.isoformat(), "end": end.isoformat()}
         if self.description:
             result["description"] = self.description
         if self.time_mode == "全天" and self.repeat != "Cron":
@@ -494,8 +450,9 @@ class Agenda:
             hit = next(occurrences(event, start, end, 1), None)
             if hit:
                 row = event.agent_record(*hit)
-                if hit[1].timestamp() <= now.timestamp():
-                    row["status"] = "已过期"
+                row["status"] = ("ended" if hit[1].timestamp() <= now.timestamp() else
+                                 "ongoing" if hit[0].timestamp() <= now.timestamp() else "upcoming")
+                row["status_label"] = {"ended": "已结束", "ongoing": "进行中", "upcoming": "未开始"}[row["status"]]
                 rows.append(row)
         rows.sort(key=lambda row: (row["start"], row["title"]))
         return {"now": now.isoformat(), "mode": mode, "start": start.isoformat(),
@@ -642,7 +599,7 @@ def populate_agenda_choices(metadata: dict, raw: dict) -> None:
         ident = group.get("agenda_id")
         if isinstance(ident, str) and ident and ident not in values:
             values.append(ident)
-            labels.append(str(index + 1) + ". " + str(group.get("name") or "未命名组"))
+            labels.append(str(index + 1) + ". " + str(group.get("group_name") or "未命名组"))
     for row in events:
         ident = row.get("group_id")
         if isinstance(ident, str) and ident and ident not in values:
@@ -751,6 +708,15 @@ class AgendaStore:
         self._lock = _LOCKS.setdefault(str(self.path.resolve()), asyncio.Lock())
         self._payload: dict | None = None
         self.ready = False
+        self.recovered_configless_pending = False
+
+    @staticmethod
+    def require_config_owner(config: Any) -> None:
+        """Reject missing config before creating a durable transaction."""
+        if (not isinstance(config, dict) or not config
+                or not any(callable(getattr(config, name, None))
+                           for name in ("save_config_async", "save_config"))):
+            raise AgendaStoreError("框架未提供可保存的插件配置，已停止初始化以保护现有日程。请更新插件后重载；不要清空配置或日程文件。")
 
     @property
     def revision(self) -> str:
@@ -844,6 +810,19 @@ class AgendaStore:
         pending = payload.get("pending")
         if pending is None:
             return payload
+        # Versions with a config-less constructor could write this exact empty
+        # intent after AstrBot's TypeError fallback. It contains no user edits.
+        # Discard only that intent; preserve every event/exclusion and use the
+        # real native configuration. All other conflicts remain protected.
+        if (pending["before"] == _config_hash({})
+                and pending["after"] == {"agenda": {}}
+                and pending["after_hash"] == _config_hash({"agenda": {}})):
+            self.require_config_owner(config)
+            complete = copy.deepcopy(payload)
+            complete.pop("pending")
+            await self._write(complete, payload)
+            self.recovered_configless_pending = True
+            return complete
         current = _config_hash(config)
         if current not in {pending["before"], pending["after_hash"]}:
             raise AgendaStoreError("未完成的日程事务与当前配置冲突；已保留双方数据，请检查后重载。")
@@ -857,6 +836,7 @@ class AgendaStore:
         return complete
 
     async def _transaction(self, config: Any, payload: dict, previous: dict, target: dict) -> dict:
+        self.require_config_owner(config)
         payload = copy.deepcopy(payload)
         payload["revision"] = uuid.uuid4().hex
         after = config_only(target)
@@ -889,6 +869,7 @@ class AgendaStore:
         A missing file starts with no events. Only agenda.json supplies records;
         config contributes settings and group links, never an event catalog.
         """
+        self.require_config_owner(config)
         async def operation():
             previous = await self._read()
             if previous:
@@ -896,7 +877,7 @@ class AgendaStore:
                 previous = await self._finish(config, previous)
             payload = copy.deepcopy(previous) if previous else {
                 "version": 1, "revision": uuid.uuid4().hex, "events": []}
-            raw = config_only(config)
+            raw = normalize_control_values(config_only(config))
             if not isinstance(raw.get("agenda", {}), dict):
                 raw["agenda"] = {}
             raw.setdefault("agenda", {})["events"] = copy.deepcopy(payload["events"])
@@ -993,12 +974,12 @@ class AgendaStore:
 
 
 # ============================================================================
-# Agent 函数工具实现（工具文案统一读取文件顶部的编辑区）
+# Agent 函数工具实现（工具文案来自共用语言资源）
 # ============================================================================
 
 
 def create_parameters() -> dict:
-    """沿用日程字段的类型与允许值，工具说明取自顶部文案编辑区。"""
+    """沿用日程字段的类型与允许值，说明取自共用语言资源。"""
     fields = event_schema()["templates"]["event"]["items"]
     properties = {}
     for key, description in CREATE_PARAMETER_DESCRIPTIONS.items():
@@ -1050,6 +1031,38 @@ def create_parameters() -> dict:
     }
 
 
+def manage_parameters() -> dict:
+    create = create_parameters()["properties"]["events"]
+    # The same fields are already documented under events. Keep their validation
+    # constraints here without repeating every description/default in the prompt.
+    changes = {key: {attr: value for attr, value in spec.items() if attr not in {"description", "default"}}
+               for key, spec in create["items"]["properties"].items()}
+    return {"type": "object", "additionalProperties": False, "required": ["action"],
+            "properties": {
+                "action": {"type": "string", "enum": ["create", "update", "delete"],
+                           "description": "create a batch, update one rule, or delete one entire rule/series."},
+                "events": create,
+                "id": {"type": "string", "description": "update/delete: exact id returned by query_schedule. Never invent or use a title."},
+                "revision": {"type": "string", "description": "update/delete: exact revision returned for this id. If stale, query again."},
+                "changes": {"type": "object", "additionalProperties": False, "minProperties": 1,
+                            "description": "update only: fields to change; other fields remain untouched. No id, scope or SID fields.",
+                            "properties": changes},
+            }}
+
+
+def session_owned(row: dict, sid: str) -> bool:
+    """Readability never grants write access to inherited/shared records."""
+    return not row.get("group_id") and row.get("target_sids") == [sid]
+
+
+def rule_details(row: dict, sid: str) -> dict:
+    """Stable identity, optimistic concurrency token and editable rule fields."""
+    fields = CREATE_PARAMETER_DESCRIPTIONS.keys() - {"events"}
+    return {"id": row["id"], "revision": _hash(row), "editable": session_owned(row, sid),
+            "scope": "group" if row.get("group_id") else "session" if row.get("target_sids") else "global",
+            "rule": {key: copy.deepcopy(value) for key, value in row.items() if key in fields}}
+
+
 def prepare_events(events: Any, sid: str) -> list[dict]:
     """检查整批新增日程，由程序补全当前会话归属和内部编号。"""
     if not isinstance(events, list) or not events:
@@ -1090,7 +1103,7 @@ def prepare_events(events: Any, sid: str) -> list[dict]:
                     raise ValueError(f"{field_name}：星期不能重复。")
                 raise ValueError(f"{field_name}：不得为空；不用时请省略字段。")
             for key, value in event.items():
-                if isinstance(value, str) and not value.strip() and key != "description":
+                if isinstance(value, str) and not value.strip() and key not in {"description", "until"}:
                     raise ValueError(f"{key}：不得为空；不用时请省略字段。")
             if "cron_duration_minutes" in event and type(event["cron_duration_minutes"]) is not int:
                 raise ValueError("cron_duration_minutes：必须填写整数分钟。")
@@ -1130,15 +1143,15 @@ def prepare_events(events: Any, sid: str) -> list[dict]:
 
 
 class ScheduleTool(FunctionTool):
-    """原生 Agent 日程工具；查询和创建都绑定当前会话。"""
+    """原生 Agent 日程工具；查询和管理都绑定当前会话。"""
 
-    def __init__(self, plugin: Any, sid: str | None = None, *, create: bool = False) -> None:
+    def __init__(self, plugin: Any, sid: str | None = None, *, manage: bool = False) -> None:
         super().__init__(
-            name="create_schedule" if create else "query_schedule",
-            description=CREATE_TOOL_DESCRIPTION if create else QUERY_TOOL_DESCRIPTION,
-            parameters=create_parameters() if create else copy.deepcopy(QUERY_PARAMETERS),
+            name="manage_schedule" if manage else "query_schedule",
+            description=MANAGE_TOOL_DESCRIPTION if manage else QUERY_TOOL_DESCRIPTION,
+            parameters=manage_parameters() if manage else copy.deepcopy(QUERY_PARAMETERS),
         )
-        self.plugin, self.sid, self.create = plugin, sid, create
+        self.plugin, self.sid, self.manage = plugin, sid, manage
 
     async def call(self, context: Any, **kwargs: Any) -> str:
         event = context.context.event
@@ -1149,23 +1162,19 @@ class ScheduleTool(FunctionTool):
                 ensure_ascii=False,
             )
         try:
-            if self.create:
-                if set(kwargs) != {"events"}:
-                    raise ValueError("创建工具只接受 events 日程列表。")
-                result = await self.plugin.create_schedules(sid, kwargs.get("events"), event)
+            if self.manage:
+                result = await self.plugin.manage_schedules(sid, kwargs, event)
             else:
                 allowed = set(QUERY_PARAMETERS["properties"])
                 if set(kwargs) - allowed or any(not isinstance(value, str) for value in kwargs.values()):
                     raise ValueError("查询参数需要文本，且不能包含其他会话或不支持的字段。")
-                agenda = self.plugin._entry_for(sid).agenda
-                now = self.plugin._agenda_now(sid)
-                result = await asyncio.to_thread(agenda.query, now, **kwargs)
+                result = await self.plugin.query_schedules(sid, kwargs)
             return json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":"))
         except ValueError as exc:
             return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
         except Exception as exc:
             self.plugin.observer.error("AGENDA_TOOL_FAILED", exc, sid=sid)
             return json.dumps(
-                {"ok": False, "error": "日程操作未完成，请检查日志；未确认保存前不要声称创建成功。"},
+                {"ok": False, "error": "Schedule operation not confirmed. Check logs; do not claim it was saved."},
                 ensure_ascii=False,
             )

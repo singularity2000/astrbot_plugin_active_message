@@ -1,8 +1,48 @@
 from __future__ import annotations
 
 import math
+import copy
 from dataclasses import dataclass
 from typing import Any
+
+
+def normalize_control_values(raw: Any) -> dict:
+    """Keep control identifiers independent of display text; accept existing choices."""
+    # AstrBotConfig is a dict subclass with locks and persistence state attached.
+    # Copy its settings only, never the framework-owned object/attributes.
+    result = copy.deepcopy(dict(raw)) if isinstance(raw, dict) else {}
+    aliases = {"跟随全局": "inherit", "开启": "enabled", "关闭": "disabled"}
+    groups = result.get("session_groups", [])
+    for group in groups if isinstance(groups, list) else []:
+        if not isinstance(group, dict):
+            continue
+        if "name" in group:
+            group.setdefault("group_name", group.pop("name"))
+        for key in ("interjection_mode", "proactive_mode", "agenda_mode", "decision_mode", "agenda_preview_days", "agenda_max_items"):
+            value = group.get(key)
+            if isinstance(value, str) and value in aliases:
+                group[key] = aliases[value]
+    # Existing prompt text keeps working when redundant placeholders are retired.
+    names = {"mood": "routine_state", "current_time": "now", "username": "sender_name", "user_id": "sender_id"}
+    def templates(value):
+        if not isinstance(value, dict):
+            return
+        for key, item in value.items():
+            if key in {"prompt", "prompts", "activation_prompts", "jev_state_template", "task_prompt"}:
+                def replace(text):
+                    if not isinstance(text, str):
+                        return text
+                    for old, new in names.items():
+                        text = text.replace("{" + old + "}", "{" + new + "}")
+                    return text
+                value[key] = [replace(text) for text in item] if isinstance(item, list) else replace(item)
+            elif isinstance(item, dict):
+                templates(item)
+            elif isinstance(item, list):
+                for row in item:
+                    templates(row)
+    templates(result)
+    return result
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -130,6 +170,8 @@ class PluginConfig:
 
     @classmethod
     def from_raw(cls, raw: Any) -> "PluginConfig":
+        # Settings normalizes the persisted view once. Do not copy the entire
+        # schedule catalog again for every effective session configuration.
         root = _as_dict(raw)
         interjection = _as_dict(root.get("interjection"))
         weights = _as_dict(interjection.get("weights"))
@@ -154,11 +196,11 @@ class PluginConfig:
                 ) if isinstance(raw_sids, list) else ()
                 groups.append(
                     SessionGroup(
-                        name=_text(item_dict.get("name"), f"会话组 {index + 1}"),
+                        name=_text(item_dict.get("group_name"), f"会话组 {index + 1}"),
                         sids=sids,
                         threshold_override=_text(item_dict.get("threshold_override")),
-                        interjection_mode=_text(item_dict.get("interjection_mode"), "跟随全局"),
-                        proactive_mode=_text(item_dict.get("proactive_mode"), "跟随全局"),
+                        interjection_mode=_text(item_dict.get("interjection_mode"), "inherit"),
+                        proactive_mode=_text(item_dict.get("proactive_mode"), "inherit"),
                     )
                 )
 
@@ -226,7 +268,7 @@ class PluginConfig:
                 if isinstance(value, str) and value.strip()
             )
             or (
-                "请像一个真实的聊天伙伴一样，自然地开启一段轻松对话。不要提及定时任务、插件或内部提示；如果现在不适合打扰，就不要发送消息。当前作息：{mood}。",
+                "请像一个真实的聊天伙伴一样，自然地开启一段轻松对话。不要提及定时任务、插件或内部提示；如果现在不适合打扰，就不要发送消息。当前作息：{routine_state}。",
             ),
             groups=tuple(groups),
             debounce_max_seconds=_float(interjection.get("debounce_max_seconds"), 10),

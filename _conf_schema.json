@@ -261,9 +261,9 @@
           "type": "text"
         },
         "default": [
-          "请像一个真实的聊天伙伴一样，自然地主动开启或继续一段对话。不要提及定时任务、插件或内部提示；如果现在不适合打扰，就不要发送消息。\n你上一次发言是在：{ai_last_sent_time}。你已 {unreplied_count} 次连续发言未收到回复。"
+          "请像一个真实的聊天伙伴一样发送消息，自然地主动开启或继续一段对话。不要提及定时任务、插件或内部提示；如果现在不适合打扰，就不要发送消息。\n你上一次发言是在：{ai_last_sent_time}。你已 {unreplied_count} 次连续发言未收到回复。"
         ],
-        "hint": "告诉机器人主动聊天时如何开场、采用什么语气。每次随机选一条，可连续重复。{mood} 表示睡眠、正常或活跃，不是情绪；主动任务中的 {username} 为“不适用”。可用 {user_last_message_time_ago} 和 {unreplied_count} 参考最近互动。"
+        "hint": "告诉机器人主动聊天时如何开场、采用什么语气。每次随机选一条，可连续重复。{routine_state} 表示睡眠、正常或活跃，不是情绪；主动任务中的 {sender_name} 为“不适用”。可用 {user_last_message_time_ago} 和 {unreplied_count} 参考最近互动。"
       },
       "task_prompt": {
         "type": "text",
@@ -355,7 +355,7 @@
         "type": "int",
         "description": "每步回放的字数上限（字符）",
         "default": 16000,
-        "hint": "仅限制检查台展示的文字长度，不改变模型实际收到的内容。超出时会标明文字已缩减。"
+        "hint": "仅限制控制台展示的文字长度，不改变模型实际收到的内容。超出时会标明文字已缩减。"
       }
     },
     "hint": "临时采集执行步骤和请求文字预览，可能包含聊天正文；已知凭据和媒体编码会隐藏。记录只放在内存中，受保留时间、容量和每步文字上限限制。"
@@ -367,7 +367,7 @@
       "group": {
         "name": "会话组",
         "items": {
-          "name": {
+          "group_name": {
             "type": "string",
             "description": "组名称",
             "default": "默认会话组"
@@ -385,23 +385,33 @@
             "type": "string",
             "description": "本组智能插话",
             "options": [
+              "inherit",
+              "enabled",
+              "disabled"
+            ],
+            "default": "inherit",
+            "hint": "跟随全局：采用全局“启用智能插话”的值；开启／关闭：覆盖该功能开关。三种选择都受最上方“启用主动会话插件”总开关控制，还须满足范围、模型、阈值与框架权限。",
+            "labels": [
               "跟随全局",
               "开启",
               "关闭"
-            ],
-            "default": "跟随全局",
-            "hint": "跟随全局：采用全局“启用智能插话”的值；开启／关闭：覆盖该功能开关。三种选择都受最上方“启用主动会话插件”总开关控制，还须满足范围、模型、阈值与框架权限。"
+            ]
           },
           "proactive_mode": {
             "type": "string",
             "description": "本组主动聊天",
             "options": [
+              "inherit",
+              "enabled",
+              "disabled"
+            ],
+            "default": "inherit",
+            "hint": "跟随全局：采用全局“启用主动聊天”的值；开启／关闭：覆盖该功能开关。三种选择都受最上方“启用主动会话插件”总开关控制，还须满足范围、作息、上限与框架权限。",
+            "labels": [
               "跟随全局",
               "开启",
               "关闭"
-            ],
-            "default": "跟随全局",
-            "hint": "跟随全局：采用全局“启用主动聊天”的值；开启／关闭：覆盖该功能开关。三种选择都受最上方“启用主动会话插件”总开关控制，还须满足范围、作息、上限与框架权限。"
+            ]
           },
           "threshold_override": {
             "type": "string",
@@ -412,13 +422,18 @@
           "decision_mode": {
             "type": "string",
             "description": "判断模式",
-            "default": "跟随全局",
+            "default": "inherit",
             "options": [
-              "跟随全局",
+              "inherit",
               "llm",
               "jev"
             ],
-            "hint": "留空跟随全局；llm 使用已有聊天模型，jev 使用专用判断模型。两种模式的连接信息都在全局“判断模型”中配置。"
+            "hint": "留空跟随全局；llm 使用已有聊天模型，jev 使用专用判断模型。两种模式的连接信息都在全局“判断模型”中配置。",
+            "labels": [
+              "跟随全局",
+              "LLM",
+              "Jev"
+            ]
           },
           "interjection_overrides": {
             "type": "object",
@@ -536,7 +551,7 @@
                   "type": "text"
                 },
                 "default": [],
-                "hint": "留空跟随全局；填写后只用于本组。告诉机器人主动聊天时如何开场、采用什么语气。每次随机选一条，可连续重复。{mood} 表示睡眠、正常或活跃，不是情绪；主动任务中的 {username} 为“不适用”。可用 {user_last_message_time_ago} 和 {unreplied_count} 参考最近互动。"
+                "hint": "留空跟随全局；填写后只用于本组。告诉机器人主动聊天时如何开场、采用什么语气。每次随机选一条，可连续重复。{routine_state} 表示睡眠、正常或活跃，不是情绪；主动任务中的 {sender_name} 为“不适用”。可用 {user_last_message_time_ago} 和 {unreplied_count} 参考最近互动。"
               },
               "task_prompt": {
                 "type": "text",
@@ -614,9 +629,14 @@
           "agenda_mode": {
             "type": "string",
             "description": "本组日程功能",
-            "default": "跟随全局",
+            "default": "inherit",
             "hint": "跟随全局：使用全局日程功能开关；开启或关闭：仅改变本组。关闭后不再提供日程背景，日程里的暂停规则也不生效，但不会删除日程。仍受插件总开关控制。",
             "options": [
+              "inherit",
+              "enabled",
+              "disabled"
+            ],
+            "labels": [
               "跟随全局",
               "开启",
               "关闭"
@@ -632,14 +652,14 @@
           "agenda_preview_days": {
             "type": "string",
             "description": "本组日程预览天数",
-            "default": "跟随全局",
-            "hint": "默认填写“跟随全局”；可直接填数字覆盖全局；清空表示本组不限制。填写 0 完全关闭本组自动注入，工具和暂停规则仍可用。"
+            "default": "inherit",
+            "hint": "默认填写“inherit（跟随全局）”；可直接填数字覆盖全局；清空表示本组不限制。填写 0 完全关闭本组自动注入，工具和暂停规则仍可用。"
           },
           "agenda_max_items": {
             "type": "string",
             "description": "本组日程注入条数上限",
-            "default": "跟随全局",
-            "hint": "默认填写“跟随全局”；可直接填数字覆盖全局；清空表示本组不限制。填写正整数限制当前、未来安排各自的条数。"
+            "default": "inherit",
+            "hint": "默认填写“inherit（跟随全局）”；可直接填数字覆盖全局；清空表示本组不限制。填写正整数限制当前、未来安排各自的条数。"
           },
           "routine_overrides": {
             "type": "object",
@@ -665,7 +685,8 @@
               }
             }
           }
-        }
+        },
+        "display_item": "group_name"
       }
     },
     "default": [],
@@ -680,13 +701,13 @@
         "type": "bool",
         "description": "启用日程功能",
         "default": false,
-        "hint": "提供当前会话适用的日程背景和查询、创建工具，并执行暂停规则。可独立开启，仍受插件总开关控制。预览天数为 0 时只关闭自动注入，工具和暂停规则仍可用。"
+        "hint": "提供当前会话适用的日程背景和查询、管理工具，并执行暂停规则。可独立开启，仍受插件总开关控制。预览天数为 0 时只关闭自动注入，工具和暂停规则仍可用。"
       },
       "outside_scope": {
         "type": "bool",
         "description": "向插件生效范围外会话提供全局日程",
         "default": false,
-        "hint": "开启后，范围外会话可获得共享全局日程及指定给它的日程，并可查询、创建自己的单会话日程；不会开启智能插话或主动聊天。也允许在 Pages 全局日程编辑窗口填写指定 SID 列表。"
+        "hint": "开启后，范围外会话可获得共享全局日程及指定给它的日程，并可查询、管理自己的单会话日程；不会开启智能插话或主动聊天。也允许在 Pages 全局日程编辑窗口填写指定 SID 列表。"
       },
       "background_description": {
         "type": "text",

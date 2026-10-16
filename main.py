@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.4.2"
+PLUGIN_VERSION = "1.5.0"
 
 import asyncio
 import hashlib
@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from typing import Any
 
-from astrbot.api import ToolSet, logger as fallback_logger
+from astrbot.api import AstrBotConfig, ToolSet, logger as fallback_logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
@@ -21,12 +21,13 @@ from astrbot.core.platform.message_type import MessageType
 
 from .active_message.agenda import (
     AgendaStore, AgendaStoreError, ScheduleTool,
-    context_text, prepare_events, publish_agenda_schema,
+    AgendaEvent, context_text, prepare_events, publish_agenda_schema,
+    manage_parameters, rule_details, session_owned,
 )
 from .active_message.context_input import ContextUnavailable, group_history_limit, read_context
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
-from .active_message.diagnostics import Observability, TraceStore
+from .active_message.diagnostics import MESSAGES, Observability, TraceStore
 from .active_message.proactive import NativeAgentError, RunProgress, SessionBoundSendTool, run_proactive_agent
 from .active_message.decisions import DecisionClient, DecisionError
 from .active_message.models import DecisionResult, MessageObservation
@@ -52,9 +53,12 @@ class ActiveMessagePlugin(Star):
 
     PLUGIN_ID = PLUGIN_ID
 
-    def __init__(self, context: Context, config: dict | None = None) -> None:
+    def __init__(self, context: Context, config: AstrBotConfig) -> None:
+        # The framework retries a constructor without config after a TypeError.
+        # A configured plugin must never turn that fallback into an empty owner.
+        AgendaStore.require_config_owner(config)
         super().__init__(context)
-        self.config_raw = config if config is not None else {}
+        self.config_raw = config
         self.settings = Settings(self.config_raw)
         self.plugin_config = self.settings.config
         self.runtime = RuntimeStore()
@@ -88,7 +92,7 @@ class ActiveMessagePlugin(Star):
         self._warned: set[str] = set()
         # Native future tasks build their own Agent without OnLLMRequest. The
         # registered tools derive their SID from that Agent's event as well.
-        self._agenda_tools = [ScheduleTool(self), ScheduleTool(self, create=True)]
+        self._agenda_tools = [ScheduleTool(self), ScheduleTool(self, manage=True)]
         self.context.add_llm_tools(*self._agenda_tools)
 
     def _entry_for(self, sid: str | None = None):
@@ -134,7 +138,7 @@ class ActiveMessagePlugin(Star):
 
     async def create_schedules(self, sid: str, events: Any, event: AstrMessageEvent) -> dict:
         async with self._settings_lock:
-            if not self.agenda_allowed(sid):
+            if event.unified_msg_origin != sid or not self.agenda_allowed(sid):
                 raise ValueError("本会话日程功能已关闭，未创建。")
             rows = prepare_events(events, sid)
             # Repeated tool calls in the same Agent event must not duplicate a batch.
@@ -157,11 +161,74 @@ class ActiveMessagePlugin(Star):
             self.plugin_config = candidate.config
             publish_agenda_schema(self.config_raw, candidate.schema)
             self._alarm.wake()
-            result = {"created": [{key: row[key] for key in request.keys() | {"title", "start_date", "repeat", "time_mode"}}
-                                 for row, request in zip(rows, events)], "sid": sid,
+            result = {"created": [rule_details(row, sid) for row in rows], "sid": sid,
                       "timezone": str(self._agenda_now(sid).tzinfo), "saved": True}
             created[signature] = result
             event.set_extra("_active_message_created_schedules", created)
+            return result
+
+    async def query_schedules(self, sid: str, arguments: dict) -> dict:
+        async with self._settings_lock:
+            if not self.agenda_allowed(sid):
+                raise ValueError("Schedules are disabled for this conversation.")
+            entry = self._entry_for(sid)
+            now = self._agenda_now(sid)
+            rows = {row["id"]: row for row in entry.raw["agenda"]["events"]}
+            if arguments.get("mode") == "catalog":
+                keyword = arguments.get("keyword", "").casefold()
+                records = [rule_details(row, sid) | {"title": row["title"], "enabled": row["enabled"]}
+                           for row in rows.values()
+                           if not keyword or keyword in (row["title"] + " " + row.get("description", "")).casefold()]
+                return {"now": now.isoformat(), "mode": "catalog", "events": records,
+                        "note": "All visible rules, including disabled. Only editable=true rules can be managed."}
+            result = await asyncio.to_thread(entry.agenda.query, now, **arguments)
+            result["events"] = [row | rule_details(rows[row["id"]], sid) for row in result["events"]]
+            return result
+
+    async def manage_schedules(self, sid: str, arguments: dict, event: AstrMessageEvent) -> dict:
+        """Validate scope and every field in code, regardless of model instructions."""
+        from jsonschema import Draft202012Validator
+        if event.unified_msg_origin != sid:
+            raise ValueError("Only the current conversation can be managed.")
+        if next(Draft202012Validator(manage_parameters()).iter_errors(arguments), None):
+            raise ValueError("Invalid arguments. Use action=create + events, update + id/revision/changes, or delete + id/revision. Omit unused fields and null.")
+        action = arguments["action"]
+        required = {"action", "events"} if action == "create" else {"action", "id", "revision"} | ({"changes"} if action == "update" else set())
+        if set(arguments) != required:
+            raise ValueError("This action requires exactly: " + ", ".join(sorted(required)))
+        if action == "create":
+            return await self.create_schedules(sid, arguments["events"], event)
+        signature = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
+        async with self._settings_lock:
+            if not self.agenda_allowed(sid):
+                raise ValueError("Schedules are disabled for this conversation.")
+            previous = event.get_extra("_active_message_managed_schedules", {})
+            if signature in previous:
+                return previous[signature]
+            raw = self.agenda_store.view(self.config_raw)
+            rows = raw["agenda"]["events"]
+            row = next((row for row in rows if row["id"] == arguments["id"]), None)
+            if row is None or not session_owned(row, sid):
+                raise ValueError("This schedule is missing or read-only. Only schedules exclusive to the CURRENT conversation may be managed; query_schedule again.")
+            if rule_details(row, sid)["revision"] != arguments["revision"]:
+                raise ValueError("This schedule changed since the query. Query it again before updating/deleting.")
+            if action == "update":
+                replacement = row | arguments["changes"]
+                AgendaEvent.from_raw(replacement, "指定会话")
+                rows[rows.index(row)] = replacement
+            else:
+                rows.remove(row)
+            candidate = Settings(raw)
+            agenda_errors = [hint for sections in candidate.all_errors().values() for name, items in sections.items()
+                             if name in {"agenda", "shared"} for _, hint in items]
+            if action == "update" and agenda_errors:
+                raise ValueError("; ".join(dict.fromkeys(agenda_errors)))
+            await self.apply_agenda(candidate, expected_revision=self.agenda_store.revision,
+                                    expected_config_revision=self.agenda_store.config_revision(self.config_raw))
+            result = {"action": action, "id": row["id"], "saved": True, "entire_series": True,
+                      **({"schedule": rule_details(replacement, sid)} if action == "update" else {})}
+            previous[signature] = result
+            event.set_extra("_active_message_managed_schedules", previous)
             return result
 
     def _inject_agenda(self, event: AstrMessageEvent, run_context: Any) -> None:
@@ -229,7 +296,7 @@ class ActiveMessagePlugin(Star):
                     tone = "decision"
                 elif code == "PROACTIVE_COMPLETED":
                     label = "本轮结果：" + record.get("outcome", "已结束")
-                    tone = "error" if any(word in record.get("outcome", "") for word in ("失败", "超时", "未确认", "未退出")) else "success" if record.get("sent") else "warning" if "放弃" in record.get("outcome", "") else "neutral"
+                    tone = "error" if record.get("failed") else "success" if record.get("sent") else "warning" if record.get("result") == "skipped" else "neutral"
                 elif code in {"PROACTIVE_SEND_SKIPPED", "PROACTIVE_SKIPPED", "DECISION_STALE"}:
                     tone = "warning"
                 self.traces.add(run_id, label, data, key=key, tone=tone,
@@ -238,7 +305,7 @@ class ActiveMessagePlugin(Star):
                 return
             if record["code"] == "MESSAGE_SENT":
                 if not record.get("proactive"):
-                    self.traces.finish(run_id, "已发送")
+                    self.traces.finish(run_id, "已发送", result="sent", sent=True)
 
     async def initialize(self) -> None:
         """Validate effective settings once; a bad group does not disable other groups."""
@@ -247,6 +314,8 @@ class ActiveMessagePlugin(Star):
             async with self._settings_lock:
                 default_warnings = [warning for warning in self.settings.warnings if warning["code"] == "CONFIG_DEFAULTED"]
                 view = await self.agenda_store.initialize(self.config_raw)
+                if self.agenda_store.recovered_configless_pending:
+                    self.observer.log("info", "AGENDA_CONFIGLESS_RECOVERED")
                 self.settings = Settings(view)
                 self.settings.warnings.extend(warning for warning in default_warnings if warning not in self.settings.warnings)
                 self.plugin_config = self.settings.config
@@ -359,6 +428,7 @@ class ActiveMessagePlugin(Star):
             return
         if is_new_session:
             self._alarm.wake()
+        self.ensure_scheduler(sid)
         message_id = str(getattr(event.message_obj, "message_id", "") or f"event-{id(event)}")
         added = self.runtime.incoming(sid, MessageObservation(
             time.time(), message_id, event.get_sender_id(), event.get_sender_name(),
@@ -374,7 +444,7 @@ class ActiveMessagePlugin(Star):
         self.traces.finish(run_id, "已接收，未进入插话判断")
         # 正常唤醒/命令可能在主框架中提前结束，回放分类不能依赖后面的插话钩子。
         if event.get_message_type() != MessageType.GROUP_MESSAGE or not self._eligible(event):
-            self.traces.finish(run_id, "不是普通群消息，或已由正常唤醒／命令流程处理")
+            self.traces.finish(run_id, "正常唤醒或命令已交给框架", kind="ordinary")
         if not self._eligible(event):
             self.runtime.invalidate(sid)
         elif not state.judging:
@@ -387,15 +457,15 @@ class ActiveMessagePlugin(Star):
         """在主框架群消息记录之后判断，直接使用真实发送者的原事件。"""
         sid = event.unified_msg_origin
         cfg = self._config_for(sid)
-        def skip(reason):
+        def skip(reason, kind=None):
             run_id = event.get_extra("_active_message_run_id")
             self.traces.add(run_id, "前置检查", {"reason":reason})
-            self.traces.finish(run_id, reason)
+            self.traces.finish(run_id, reason, kind=kind)
         if not self._available() or not cfg.enabled or not cfg.interjection_enabled or not self._feature_valid(sid, "interjection"):
             skip("插话已关闭或配置无效")
             return
         if event.get_message_type() != MessageType.GROUP_MESSAGE or not self._eligible(event):
-            skip("不是普通群消息，或已由正常唤醒／命令流程处理")
+            skip("正常唤醒或命令已交给框架", kind="ordinary")
             return
         matched, group = self.scopes.match(sid)
         if not matched:
@@ -440,7 +510,9 @@ class ActiveMessagePlugin(Star):
                 raise
         except Exception as exc:
             state.agent_active = False
-            self.observer.error("INTERJECTION_FAILED", exc, sid=sid)
+            run_id = event.get_extra("_active_message_run_id")
+            self.observer.error("INTERJECTION_FAILED", exc, sid=sid, run_id=run_id)
+            self.traces.finish(run_id, MESSAGES["INTERJECTION_FAILED"], result="failed", error=True)
         finally:
             if state.pending_task is task:
                 state.pending_task = None
@@ -448,7 +520,7 @@ class ActiveMessagePlugin(Star):
                 state.batch_started_at = None
             run_id = event.get_extra("_active_message_run_id")
             run = self.traces.describe(run_id)
-            if run and run["status"] == "进行中":
+            if run and run["result"] == "running":
                 self.traces.finish(run_id, "已取消或未满足触发条件")
 
     async def _evaluate(self, event: AstrMessageEvent, generation: int) -> ProviderRequest | None:
@@ -498,11 +570,11 @@ class ActiveMessagePlugin(Star):
             except ContextUnavailable as exc:
                 self._warn_once(str(exc), sid)
                 self.traces.add(run_id, "上下文不可用", {"code":str(exc)})
-                self.traces.finish(run_id, "上下文不可用：" + str(exc))
+                self.traces.finish(run_id, "上下文不可用：" + str(exc), result="failed", error=True)
                 return None
             except DecisionError as exc:
                 self.observer.log("warning", exc.code, sid=sid, run_id=run_id, **exc.details)
-                self.traces.finish(run_id, "判断未成功：" + exc.code)
+                self.traces.finish(run_id, "判断未成功：" + exc.code, result="failed", error=True)
                 return None
             current = await current_conversation(self.context, sid)
             stale = (current is None or getattr(current, "cid", None) != getattr(conversation, "cid", None)
@@ -537,7 +609,7 @@ class ActiveMessagePlugin(Star):
                 elif getattr(component, "type", "") == "Record":
                     request.audio_urls.append(await component.convert_to_file_path())
             state.agent_active = True
-            self.traces.finish(run_id, "已交给原生 Agent")
+            self.traces.finish(run_id, "已交给原生 Agent", result="running")
             self.observer.log("info", "AGENT_REQUESTED", sid=sid, run_id=run_id, role=event.role)
             return request
 
@@ -547,11 +619,11 @@ class ActiveMessagePlugin(Star):
         if req.func_tool:
             # Copy the request's tool set; never mutate the global/native registry.
             req.func_tool = ToolSet(list(req.func_tool.tools))
-            for name, create in (("query_schedule", False), ("create_schedule", True)):
+            for name, manage in (("query_schedule", False), ("manage_schedule", True)):
                 tool = req.func_tool.get_tool(name)
                 if isinstance(tool, ScheduleTool):
                     if self.agenda_allowed(sid):
-                        req.func_tool.add_tool(ScheduleTool(self, sid, create=create))
+                        req.func_tool.add_tool(ScheduleTool(self, sid, manage=manage))
                     else:
                         req.func_tool.remove_tool(name)
         meta = event.get_extra(META_KEY, {})
@@ -656,9 +728,15 @@ class ActiveMessagePlugin(Star):
         self._release_agent(sid, id(event))
         meta = event.get_extra(META_KEY, {})
         if meta.get("plugin") == PLUGIN_ID:
-            self._capture(meta["run_id"], "Agent 最终响应", {"role":getattr(response,"role",None), "text":getattr(response,"completion_text","")})
+            self._capture(meta["run_id"], "Agent 最终响应", {"role":getattr(response,"role",None), "text":getattr(response,"completion_text","")}, tone="response")
             self.observer.log("debug", "AGENT_DONE", sid=sid, run_id=meta["run_id"],
                               trigger_type=meta["trigger_type"], role=event.role, response_role=getattr(response, "role", None))
+            if meta.get("trigger_type") == "智能插话":
+                sent = bool(event.get_extra("_active_message_sent", False))
+                failed = getattr(response, "role", None) == "err"
+                status = ("已发送，后续原生 Agent 最终失败" if sent else MESSAGES["INTERJECTION_FAILED"]) if failed else "已发送" if sent else "正常完成，未发送"
+                self.traces.finish(meta["run_id"], status,
+                                   result="sent" if sent else "failed" if failed else "quiet", sent=sent, error=failed)
 
     @filter.on_using_llm_tool()
     async def on_using_tool(self, event: AstrMessageEvent, tool: Any, tool_args: dict | None) -> None:
@@ -756,8 +834,9 @@ class ActiveMessagePlugin(Star):
                            persona_prompt=prompt, persona_name=name, conversation_history=json.dumps(bundle.history, ensure_ascii=False),
                            recent_messages=recent, message_count=len(state.recent_human), silence_seconds=silence,
                            activity_score=activity, energy_score=energy, threshold=self._threshold(sid),
-                           mood=current_mood(now, cfg.sleep_hours, cfg.active_hours), trigger_type=trigger_type,
-                           last_human_at=state.last_human_at, last_bot_at=state.last_bot_at, unreplied_count=self.runtime.unreplied.get(sid, 0))
+                           routine_state=current_mood(now, cfg.sleep_hours, cfg.active_hours), trigger_type=trigger_type,
+                           last_human_at=state.last_human_at, last_bot_at=state.last_bot_at, unreplied_count=self.runtime.unreplied.get(sid, 0),
+                           proactive_remaining=max(0, cfg.proactive_daily_limit - (state.daily_proactive_sent if state.last_bot_date == now.date().isoformat() else 0)))
         values["image_descriptions"] = json.dumps(bundle.images, ensure_ascii=False)
         values["_context_payload"] = bundle.payload()
         agenda = self._entry_for(sid).agenda.snapshot(self._agenda_now(sid), agent=True)
@@ -811,11 +890,36 @@ class ActiveMessagePlugin(Star):
                 continue
             now = self._now(sid)
             # A midnight wake creates the next day's plan even if today has no slots.
-            deadlines.append((now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp())
             state = self.runtime.sessions.get(sid)
+            if state is None and len(self.runtime.sessions) >= self.runtime.MAX_SESSIONS:
+                continue
+            if (state is None or state.proactive_schedule_date != now.date().isoformat()
+                    or state.proactive_schedule_key != self._schedule_key(sid, now)):
+                return 1.0
+            deadlines.append((now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp())
             if state and state.proactive_next_run:
                 deadlines.append(datetime.fromisoformat(state.proactive_next_run).timestamp())
         return max(0.0, min(deadlines) - time.time()) if deadlines else None
+
+    def ensure_scheduler(self, sid: str | None = None) -> None:
+        """Recover a stopped alarm or an outdated plan; never resample valid slots."""
+        if not self._available() or not self.settings.any_enabled("proactive"):
+            return
+        needs_wake = self._alarm.task is None or self._alarm.task.done()
+        for target in ([sid] if sid else self.scopes.targets(self.runtime.sessions)):
+            if not self._feature_valid(target, "proactive") or not self._config_for(target).proactive_enabled:
+                continue
+            state = self.runtime.sessions.get(target)
+            if state is None and len(self.runtime.sessions) >= self.runtime.MAX_SESSIONS:
+                continue
+            now = self._now(target)
+            if (state is None or state.proactive_schedule_date != now.date().isoformat()
+                    or state.proactive_schedule_key != self._schedule_key(target, now)):
+                needs_wake = True
+                break
+        if needs_wake:
+            self._alarm.start()
+            self._alarm.wake()
 
     def _proactive_block_reason(self, sid: str) -> str:
         cfg = self._config_for(sid)
@@ -996,7 +1100,7 @@ class ActiveMessagePlugin(Star):
 
     async def _run_proactive(self, sid: str, meta: dict[str, Any]) -> None:
         cfg = self._config_for(sid)
-        progress = RunProgress(self.observer, sid, meta["run_id"], cfg.proactive_timeout_seconds)
+        progress = RunProgress(self.observer, sid, meta["run_id"], cfg.proactive_timeout_seconds, capture=self._capture)
         meta["progress"] = progress
         self.traces.watch(meta["run_id"], sid, "主动聊天", progress.snapshot)
         deadline = None
@@ -1018,11 +1122,14 @@ class ActiveMessagePlugin(Star):
                         self.observer.log("info", "PROACTIVE_QUOTA_USED", sid=sid, run_id=meta["run_id"],
                                           daily_proactive_sent=self.runtime.get(sid).daily_proactive_sent)
                 else:
+                    progress.result = "skipped"
                     progress.outcome = "跳过：插件已停止或正在更新"
         except asyncio.CancelledError:
+            progress.result = "cancelled"
             progress.outcome = "已发送，后续执行被取消" if progress.sent else "任务已取消"
             raise
         except ContextUnavailable as exc:
+            progress.result = "failed"
             progress.outcome = "上下文不可用：" + str(exc)
             self._warn_once(str(exc), sid)
             self.observer.error("PROACTIVE_RUN_FAILED", exc, sid=sid, run_id=meta["run_id"], **progress.snapshot())
@@ -1031,6 +1138,7 @@ class ActiveMessagePlugin(Star):
                          (isinstance(exc, (TimeoutError, NativeAgentError)) and progress.deadline_at is not None
                           and time.monotonic() >= progress.deadline_at))
             native_failed = isinstance(exc, NativeAgentError) and not timed_out
+            progress.result = "timeout" if timed_out else "failed"
             if native_failed:
                 progress.outcome = "已发送，后续原生 Agent 最终失败" if progress.sent else "原生 Agent 最终失败"
             else:
@@ -1043,17 +1151,20 @@ class ActiveMessagePlugin(Star):
         finally:
             outcome = progress.outcome or ("已发送，未确认任务完成" if progress.sent else "任务结束，未确认发送")
             if any(not task.done() for task in progress.active_tools):
+                progress.result = "failed"
                 outcome += "；工具未退出，插件已暂停"
             self.observer.log("info", "PROACTIVE_COMPLETED", sid=sid, run_id=meta["run_id"],
-                              outcome=outcome, **progress.snapshot())
+                              outcome=outcome, failed=progress.result in {"failed", "timeout", "cancelled"}, **progress.snapshot())
             state = self.runtime.get(sid)
             for row in state.proactive_schedule:
                 if row["at"] == meta.get("scheduled_at"):
                     status = ("sent" if progress.sent else "quiet" if progress.completed else
-                              "skipped" if "跳过" in outcome or "放弃" in outcome else "failed")
+                              "skipped" if progress.result == "skipped" else "failed")
                     row.update(status=status, reason=outcome)
                     break
-            self.traces.finish(meta["run_id"], outcome)
+            self.traces.finish(meta["run_id"], outcome,
+                               result="sent" if progress.sent else "quiet" if progress.completed else progress.result,
+                               sent=progress.sent, error=progress.result in {"failed", "timeout", "cancelled"})
             self._proactive_tasks.pop(sid, None)
             self._agent_events.pop(sid, None)
             self.runtime.get(sid).agent_active = False

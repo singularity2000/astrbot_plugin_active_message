@@ -1,6 +1,8 @@
 """结构化日志、异常摘要与有容量和时限的内存决策回放。"""
 from __future__ import annotations
 
+from .i18n import catalog, display_text
+
 import copy
 import json
 import time
@@ -26,12 +28,15 @@ class TraceStore:
         # Active summaries refer to already-running tasks. Unlike step history,
         # they remain available while a slow native model is still working.
         self.live = {}
+        self.latest_results = {}
 
     def clear(self):
         self.runs.clear()
         self.sizes.clear()
+        self.latest_results.clear()
 
     def watch(self, run_id, sid, kind, snapshot):
+        kind = {"智能插话": "interjection", "主动聊天": "proactive"}.get(kind, kind)
         self.live[run_id] = {"sid": sid, "kind": kind,
                              "created_at": self.runs.get(run_id, {}).get("created_at", time.time()),
                              "snapshot": snapshot}
@@ -41,7 +46,7 @@ class TraceStore:
         if live is None:
             return None
         return {"run_id": run_id, "sid": live["sid"], "kind": live["kind"],
-                "created_at": live["created_at"], "status": "进行中", "steps": [],
+                "created_at": live["created_at"], "status": "进行中", "result": "running", "sent": False, "error": False, "steps": [],
                 "raw_enabled": self.capture_raw, "history_omitted": True}
 
     def _summary(self, run):
@@ -61,11 +66,13 @@ class TraceStore:
             self.sizes.pop(key, None)
 
     def begin(self, run_id, sid, kind):
+        kind = {"智能插话": "interjection", "主动聊天": "proactive", "收到消息": "other"}.get(kind, kind)
         if run_id in self.runs:
-            self.runs[run_id].update(status="进行中", kind=kind)
+            self.runs[run_id].update(status="进行中", result="running", kind=kind, error=False)
             return
         self.runs[run_id] = {"run_id":run_id, "sid":sid, "kind":kind, "created_at":time.time(),
-                             "status":"进行中", "steps":[], "raw_enabled":self.capture_raw}
+                             "status":"进行中", "result":"running", "sent":False, "error":False,
+                             "steps":[], "raw_enabled":self.capture_raw}
         self.sizes[run_id] = 512
         self._prune()
 
@@ -91,6 +98,7 @@ class TraceStore:
         return "".join(chunks)
 
     def add(self, run_id, label, data=None, *, raw=False, terminal=False, key=None, tone="neutral"):
+        label = display_text(label)
         self._prune()
         run = self.runs.get(run_id)
         if run is None and terminal:
@@ -131,7 +139,8 @@ class TraceStore:
         self.sizes[run_id] += len(json.dumps(step, ensure_ascii=False).encode("utf-8")) + 128 - previous_size
         self._prune()
 
-    def finish(self, run_id, status):
+    def finish(self, run_id, status, *, result="quiet", sent=False, error=False, kind=None):
+        status = display_text(status)
         if run_id not in self.runs:
             active = self._active_run(run_id)
             if active is not None:
@@ -140,7 +149,16 @@ class TraceStore:
         self.live.pop(run_id, None)
         if run_id in self.runs:
             self.runs[run_id]["status"] = status
+            self.runs[run_id].update(result=result, sent=sent, error=error)
+            if kind:
+                self.runs[run_id]["kind"] = kind
             self.runs[run_id]["finished_at"] = time.time()
+            run = self.runs[run_id]
+            if run["kind"] in {"interjection", "proactive"} and result != "running":
+                if len(self.latest_results) >= 500 and run["sid"] not in self.latest_results:
+                    self.latest_results.pop(next(iter(self.latest_results)))
+                self.latest_results.setdefault(run["sid"], {})[run["kind"]] = {
+                    key: run[key] for key in ("run_id", "kind", "status", "result", "sent", "error", "finished_at")}
             self._prune()
 
     def list(self):
@@ -170,74 +188,11 @@ class TraceStore:
         return copy.deepcopy(self.runs.get(run_id))
 
 
-MESSAGES = {
-    "AGENDA_RESTORE_FAILED": "日程数据加载或保存恢复失败；已保护原文件并暂停插件，请检查 agenda.json 和配置后重载。",
-    "AGENDA_SAVE_FAILED": "日程与配置保存未完成；已保留恢复记录并暂停插件，请重载恢复，不要回写旧草稿。",
-    "AGENDA_TIMEZONE_INVALID": "日程时区无效，预览回退到系统时区；请修正配置。",
-    "AGENDA_CONTEXT_UNSUPPORTED": "框架缺少临时消息内容接口；未注入日程，避免污染历史。请升级 AstrBot。",
-    "EMPTY_SESSION_GROUP": "空会话组没有目标；列表非空时仍为白名单模式。",
-    "IMAGE_CONTEXT_UNAVAILABLE": "当前框架无法只读提供待注入的群图片转述；保留原历史与媒体标签，不重复识图。",
-    "JUDGMENT_INPUT": "判断输入已按预算准备；token 为估算值，不等于服务实际计费。",
-    "MODEL_RETRY": "遇到临时故障，按本轮超时与重试设置等待重试。",
-    "INPUT_TOO_LARGE": "历史已缩减，但固定提示词或当前输入仍超预算；请缩短提示词或合理调整判断预算。",
-    "PAGE_PREFERENCES_FAILED": "界面偏好存储失败，不影响运行配置。",
-    "CONFIG_APPLIED": "配置已保存并生效，聊天预约按生效的作息与额度安排。",
-    "CONFIG_DEFAULTED": "部分配置格式不兼容，已使用当前默认值；请在配置页确认。",
-    "DIAGNOSTIC_CAPTURE_FAILED": "本次诊断快照未能保存；不影响发言流程，不会用摘要冒充全文。",
-    "PAGE_READ_FAILED": "运行检查台读取失败，请检查页面接口与 Provider 状态。",
-    "CONFIG_SAVE_FAILED": "配置保存失败，未切换运行配置；请刷新页面并检查日志。",
-    "SCHEDULE_REPAIRED": "保存的计划时间无效或缺少时区，已为该会话重新安排，不影响其他会话。",
-    "ORIGINAL_ACTIVE_REPLY_ENABLED": "该会话仍开启 AstrBot 原版主动回复，本插件已跳过智能插话。请先关闭原版主动回复。",
-    "CONFIG_INVALID": "配置有误；对应功能已暂停，SID 范围或公共配置错误可能暂停整个插件。请按 field 位置和 explanation 说明修正。",
-    "GROUP_HISTORY_DISABLED": "未开启持久化群聊消息记录，已尝试框架待注入记录和插件临时记录。",
-    "GROUP_HISTORY_READ_FAILED": "持久化群消息读取失败，已尝试备用记录；回放详情包含出错步骤。",
-    "CONTEXT_HISTORY_INVALID": "当前分支历史不是有效的消息列表，已跳过本轮；请检查主框架会话数据。",
-    "CONTEXT_RUNTIME_FALLBACK": "正在使用插件临时记录；条数跟随框架设置，重载或重启后重新积累，不等于完整群历史。具体原因与条数见本轮回放。",
-    "CONTEXT_PREPARED": "参考资料已准备；selected 是选用条数，available 是本次读取的条数（不是数据库总数），source 是来源。正文不写日志。",
-    "PROVIDER_MISSING": "判断模型未配置或不可用，请检查所选 AstrBot Provider。",
-    "MODEL_TIMEOUT": "判断模型请求超时，本轮不插话。",
-    "MODEL_INVALID": "判断模型返回格式或分数无效，本轮不插话。",
-    "MODEL_ERROR": "判断模型调用失败，本轮不插话；请检查 Provider 服务。",
-    "JEV_CONFIG": "Jev 连接配置无效，请检查兼容接口地址和 API Key。",
-    "JEV_HTTP": "Jev 服务未成功接受请求，本轮不插话；请检查额度、凭据和服务状态。",
-    "DECISION_COMPLETED": "判断完成；score 包含原始分、正负权重、贡献与最终分，triggered 表示是否严格超过阈值。",
-    "DECISION_STALE": "判断期间来了新消息或进入冷却，旧结果已丢弃。",
-    "COOLDOWN": "机器人刚刚发言，仍在共享冷却期，暂不插话。",
-    "AGENT_ACTIVE": "本会话 Agent 正在运行，暂不重复触发。",
-    "NO_CONVERSATION": "本会话还没有原生对话分支，请先与机器人正常对话或使用 /new。",
-    "AGENT_REQUESTED": "插话判断通过，已交给原生 Agent。",
-    "AGENT_STARTED": "原生 Agent 已开始主动聊天。",
-    "AGENT_DONE": "原生 Agent 已结束；是否发送以 MESSAGE_SENT 为准。",
-    "MESSAGE_SENT": "已确认一次发送成功；主动任务本轮消耗一次额度，分段发送不重复计数。",
-    "ACTIVATION_PROMPT_INJECTED": "激活指令已注入，外部文本在用户层作为参考资料传递。",
-    "PROACTIVE_SCHEDULED": "已安排今天的随机聊天机会；实际运行仍需满足作息、冷却和会话条件。",
-    "PROACTIVE_SKIPPED": "本次主动机会未满足作息、上限、冷却、会话或平台条件，已跳过。",
-    "PROACTIVE_SEND_SKIPPED": "发送前检查决定放弃本次发送；这是业务限制，不代表模型调用失败。",
-    "PROACTIVE_NO_SEND": "本轮尚未确认发送；是否消耗每日额度以整轮最终结果为准。",
-    "PROACTIVE_QUOTA_USED": "本轮正常完成但未发送，已消耗一次主动尝试额度；发言冷却和无人回复数不变。",
-    "PROACTIVE_RUN_FAILED": "主动聊天执行失败或超时；本次机会结束，已发送内容保留。",
-    "PROACTIVE_TIMEOUT": "主动聊天达到整轮时间上限；请查看停留阶段、各阶段耗时和最近一次模型／工具结果。",
-    "PROACTIVE_PROGRESS": "主动聊天执行阶段已更新。",
-    "PROACTIVE_HOOK_FAILED": "本次处理步骤发生异常；整轮结果请查看结束摘要。",
-    "PROACTIVE_LLM_STARTED": "开始调用原生聊天模型；此耗时包含 Provider 内部重试。",
-    "PROACTIVE_LLM_FINISHED": "本次原生模型调用已返回。",
-    "PROACTIVE_LLM_ATTEMPT_ERROR": "本次模型尝试未成功；本轮结果待主框架确认，框架仍可能重试或切换备用模型。",
-    "PROACTIVE_TOOL_FAILED": "原生工具执行失败；框架可能将错误交回模型继续处理。",
-    "PROACTIVE_NATIVE_ERROR": "主框架已判定本轮 Agent 最终失败；请结合模型尝试与工具记录定位。",
-    "PROACTIVE_COMPLETED": "主动任务结束；发送结果与整轮执行结果分别记录。",
-    "PROACTIVE_CLEANUP_PENDING": "工具未响应取消，清理等待已结束，插件暂停主动功能；请处理该工具或重启 AstrBot，避免重复执行。",
-    "PROACTIVE_RUNNER_UNSUPPORTED": "主动聊天仅支持原生 local Runner，本会话已跳过。",
-    "PLATFORM_PROACTIVE_UNAVAILABLE": "目标平台未连接或不支持主动发送，已跳过。",
-    "SESSION_LLM_DISABLED": "本会话已关闭 LLM，已跳过主动聊天。",
-    "BARE_SID_AMBIGUOUS": "纯数字 SID 无法确定平台，请填写完整 SID。",
-    "SESSION_CAPACITY": "已达到 500 个会话的安全容量，请缩小会话白名单。",
-    "STATE_RESTORE_FAILED": "运行状态恢复失败；为避免覆盖原数据，插件暂停。",
-    "STATE_SAVE_FAILED": "运行状态保存失败；重启后计数和计划可能无法恢复。",
-    "SCHEDULER_FAILED": "调度异常，60 秒后重试；正常运行没有每分钟轮询。",
-    "PLUGIN_INITIALIZED": "插件初始化完成；请同时查看分功能配置状态。",
-    "PLUGIN_TERMINATED": "插件已停止，闹钟与任务已取消。",
-    "INTERJECTION_FAILED": "本轮智能插话执行失败，请检查异常类型和代码位置。",
-}
+MESSAGES = {code: row["message"] for code, row in catalog()["diagnostics"].items()}
+
+# The console shows the explanation and the relevant setting beside the event.
+# Codes/field names remain available in the expandable technical details.
+DIAGNOSTIC_ACTIONS = {code: (row["action"], row["tab"]) for code, row in catalog()["diagnostics"].items() if row["action"]}
 REPEAT_CODES = {"COOLDOWN", "AGENT_ACTIVE", "PROVIDER_MISSING", "MODEL_TIMEOUT", "MODEL_INVALID",
                 "MODEL_ERROR", "INPUT_TOO_LARGE", "JEV_HTTP", "JEV_CONFIG", "NO_CONVERSATION", "PROACTIVE_SKIPPED",
                 "STATE_SAVE_FAILED", "SCHEDULER_FAILED"}

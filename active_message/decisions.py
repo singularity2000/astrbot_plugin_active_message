@@ -175,7 +175,7 @@ class DecisionClient:
         if getattr(response, "role", "assistant") != "assistant":
             raise DecisionError("MODEL_INVALID: provider did not return an assistant response")
         text = getattr(response, "completion_text", None)
-        self.capture(run_id, "判断模型文字响应", text)
+        self.capture(run_id, "判断模型文字响应", text, tone="response")
         if not isinstance(text, str):
             raise DecisionError("MODEL_INVALID: response is not text")
         score, reason = parse_llm_score(text)
@@ -230,7 +230,7 @@ class DecisionClient:
                     chunks.append(chunk)
                 try:
                     payload = json.loads(b"".join(chunks))
-                    self.capture(run_id, "Jev JSON 响应", payload)
+                    self.capture(run_id, "Jev JSON 响应", payload, tone="response")
                     answer = payload["answers"]["should_speak"]
                     if answer.get("type", "noul") != "noul":
                         raise ValueError

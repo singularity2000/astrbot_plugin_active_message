@@ -1,6 +1,7 @@
 /* Draft comparison is local, value-free, and independent of preview requests. */
 (() => {
   'use strict';
+  const {t,runtime:R,value:V}=window.ActiveMessageI18n;
   const internal=key=>key==='__template_key'||key==='agenda_exclusions';
   const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
   function equal(a,b){
@@ -10,8 +11,8 @@
     const keys=Object.keys(a).filter(k=>!internal(k)),other=Object.keys(b).filter(k=>!internal(k));
     return keys.length===other.length&&keys.every(k=>Object.hasOwn(b,k)&&equal(a[k],b[k]));
   }
-  const groupSections={interjection_mode:'智能插话',threshold_override:'智能插话',decision_mode:'智能插话',interjection_overrides:'智能插话',decision_overrides:'智能插话',interjection_weights:'智能插话',interjection_activity:'智能插话',interjection_energy:'智能插话',cooldown_override:'会话组',proactive_mode:'主动聊天',routine_overrides:'作息与日程',context_overrides:'上下文与诊断',agenda_mode:'作息与日程',agenda_exclusions:'作息与日程',agenda_preview_days:'作息与日程',agenda_max_items:'作息与日程'};
-  const globalSections={routine:'作息与日程',enabled:'运行总览',interjection:'智能插话',activation_prompts:'智能插话',context:'上下文与诊断',diagnostics:'上下文与诊断',runtime:'上下文与诊断'};
+  const groupSections=()=>({interjection_mode:t("pages.console.ui.s5453160ded"),threshold_override:t("pages.console.ui.s5453160ded"),decision_mode:t("pages.console.ui.s5453160ded"),interjection_overrides:t("pages.console.ui.s5453160ded"),decision_overrides:t("pages.console.ui.s5453160ded"),interjection_weights:t("pages.console.ui.s5453160ded"),interjection_activity:t("pages.console.ui.s5453160ded"),interjection_energy:t("pages.console.ui.s5453160ded"),cooldown_override:t("pages.console.ui.s2cb02a6a10"),proactive_mode:t("pages.console.ui.s5e6f228dbe"),routine_overrides:t("pages.console.ui.sf284e9eacb"),context_overrides:t("pages.console.ui.s994242dcac"),agenda_mode:t("pages.console.ui.sf284e9eacb"),agenda_exclusions:t("pages.console.ui.sf284e9eacb"),agenda_preview_days:t("pages.console.ui.sf284e9eacb"),agenda_max_items:t("pages.console.ui.sf284e9eacb")});
+  const globalSections=()=>({routine:t("pages.console.ui.sf284e9eacb"),enabled:t("pages.console.ui.s80959ffa56"),interjection:t("pages.console.ui.s5453160ded"),activation_prompts:t("pages.console.ui.s5453160ded"),context:t("pages.console.ui.s994242dcac"),diagnostics:t("pages.console.ui.s994242dcac"),runtime:t("pages.console.ui.s994242dcac")});
   function createTracker(){
     let baseline=null,groupIds=new WeakMap(),baseGroups=[],baseByKey=new Map(),serial=0;
     function reset(current,saved){
@@ -50,39 +51,39 @@
           }
         }
         const groups=current.session_groups||[],oldGroups=saved.session_groups||[];
-        const groupName=(value,index)=>'会话组「'+(value?.name||'未命名组')+'」'+(index>=0?'（'+(index+1)+'）':'');
+        const groupName=(value,index)=>t('pages.console.group_label',{name:value?.group_name||t("pages.console.ui.sd82edc4765"),index:index+1});
         for(const key of new Set([...Object.keys(saved),...Object.keys(current)])){
           if(internal(key)||key==='session_groups'||key==='agenda'||equal(saved[key],current[key]))continue;
           const meta=schema[key]||{};
           if(key==='proactive_chat'){
             for(const field of new Set([...Object.keys(saved[key]||{}),...Object.keys(current[key]||{})])){
-              if(!equal(saved[key]?.[field],current[key]?.[field]))add(['全局','主动聊天',meta.items?.[field]?.description||field]);
+              if(!equal(saved[key]?.[field],current[key]?.[field]))add([t("pages.console.ui.sa5644f4bbf"),t("pages.console.ui.s5e6f228dbe"),meta.items?.[field]?.description||field]);
             }
-          }else if(meta.type==='object')walk(saved[key],current[key],meta.items,['全局',globalSections[key]||meta.description||key,...(['context','diagnostics','runtime'].includes(key)?[meta.description||key]:[])]);
-          else add(['全局',globalSections[key]||'',meta.description||key]);
+          }else if(meta.type==='object')walk(saved[key],current[key],meta.items,[t("pages.console.ui.sa5644f4bbf"),globalSections()[key]||meta.description||key,...(['context','diagnostics','runtime'].includes(key)?[meta.description||key]:[])]);
+          else add([t("pages.console.ui.sa5644f4bbf"),globalSections()[key]||'',meta.description||key]);
         }
         if(!equal(oldGroups,groups)){
           const entries=matchGroups(groups),groupFields=schema.session_groups?.templates?.group?.items||{};
           const currentKeys=new Set(entries.map(r=>r.key)),oldKeys=new Set(baseGroups.map(r=>r.key)),sharedOld=[...oldKeys].filter(k=>currentKeys.has(k)),sharedNow=[...currentKeys].filter(k=>oldKeys.has(k));
-          if(!equal(sharedOld,sharedNow))add(['会话组','排列顺序']);
+          if(!equal(sharedOld,sharedNow))add([t("pages.console.ui.s2cb02a6a10"),t("pages.console.ui.s08f059cebf")]);
           entries.forEach((row,index)=>{
             const before=baseByKey.get(row.key)?.value,after=row.value,name=groupName(after,index);
-            if(!before){add(['会话组',name],'（新增）');return;}
+            if(!before){add([t("pages.console.ui.s2cb02a6a10"),name],t("pages.console.ui.s7cfa5bc81f"));return;}
             for(const key of new Set([...Object.keys(before),...Object.keys(after)])){
               if(internal(key)||key==='agenda_id'||equal(before[key],after[key]))continue;
               const meta=groupFields[key]||{};
               if(key==='proactive_overrides'){
                 for(const field of new Set([...Object.keys(before[key]||{}),...Object.keys(after[key]||{})])){
-                  if(!equal(before[key]?.[field],after[key]?.[field]))add([name,'主动聊天',meta.items?.[field]?.description||field]);
+                  if(!equal(before[key]?.[field],after[key]?.[field]))add([name,t("pages.console.ui.s5e6f228dbe"),meta.items?.[field]?.description||field]);
                 }
-              }else if(meta.type==='object')walk(before[key],after[key],meta.items,[name,groupSections[key]||'会话组',...(['interjection_weights','interjection_activity','interjection_energy'].includes(key)?[meta.description||key]:[])]);
-              else add([name,groupSections[key]||'会话组',meta.description||key]);
+              }else if(meta.type==='object')walk(before[key],after[key],meta.items,[name,groupSections()[key]||t("pages.console.ui.s2cb02a6a10"),...(['interjection_weights','interjection_activity','interjection_energy'].includes(key)?[meta.description||key]:[])]);
+              else add([name,groupSections()[key]||t("pages.console.ui.s2cb02a6a10"),meta.description||key]);
             }
           });
-          baseGroups.forEach((row,index)=>{if(!currentKeys.has(row.key))add(['会话组',groupName(row.value,index)],'（删除）');});
+          baseGroups.forEach((row,index)=>{if(!currentKeys.has(row.key))add([t("pages.console.ui.s2cb02a6a10"),groupName(row.value,index)],t("pages.console.ui.s461a806eb4"));});
         }
         const agendaMeta=schema.agenda?.items||{};
-        walk(Object.fromEntries(Object.entries(saved.agenda||{}).filter(([k])=>k!=='events')),Object.fromEntries(Object.entries(current.agenda||{}).filter(([k])=>k!=='events')),agendaMeta,['全局','作息与日程']);
+        walk(Object.fromEntries(Object.entries(saved.agenda||{}).filter(([k])=>k!=='events')),Object.fromEntries(Object.entries(current.agenda||{}).filter(([k])=>k!=='events')),agendaMeta,[t("pages.console.ui.sa5644f4bbf"),t("pages.console.ui.sf284e9eacb")]);
         return [...new Set(locations)];
       }
     };
