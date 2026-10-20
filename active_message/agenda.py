@@ -1033,9 +1033,11 @@ def create_parameters(locale: str = "zh-CN") -> dict:
 
 
 def query_parameters(allow_global: bool = False, locale: str = "zh-CN") -> dict:
-    parameters = copy.deepcopy(catalog(locale)["tools"]["query_parameters"])
+    texts = catalog(locale)["tools"]
+    parameters = copy.deepcopy(texts["query_parameters"])
     if allow_global:
-        parameters["properties"]["scope"] = copy.deepcopy(catalog(locale)["tools"]["scope_parameter"])
+        parameters["properties"]["scope"] = copy.deepcopy(texts["scope_parameter"])
+        parameters["properties"]["scope"]["description"] = texts["query_scope_description"]
     return parameters
 
 
@@ -1061,6 +1063,7 @@ def manage_parameters(allow_global: bool = False, locale: str = "zh-CN") -> dict
             }}
     if allow_global:
         parameters["properties"]["scope"] = copy.deepcopy(texts["scope_parameter"])
+        parameters["properties"]["scope"]["description"] = texts["manage_scope_description"]
     return parameters
 
 

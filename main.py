@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.6.0"
+PLUGIN_VERSION = "1.6.1"
 
 import asyncio
 import copy

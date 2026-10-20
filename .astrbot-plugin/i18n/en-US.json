@@ -2322,8 +2322,8 @@
     }
   },
   "tools": {
-    "query_description": "Query schedules visible in this chat; global/group rules are read-only.\nRead schedule context; no timed reminders.\nFor one day, set start_date/end_date to the same real YYYY-MM-DD date; omit dates to start now.\nBefore update/delete, mode=catalog finds all rules, including disabled ones. Only editable=true may change; copy that record's id/revision.\nDate queries return the first occurrence per rule in range; status describes that occurrence, not the whole series.",
-    "manage_description": "Manage only this chat's exclusive rules; no scope/target SID. Stop global operations until authorized.\nManage schedule context; no timed reminders.\nCreate: action=create + events; each item needs title/start_date. Defaults: all-day, once. Put multiple events in one array.\nTime range: set time_mode=时段 and start_time/end_time (HH:MM).\nUpdate/delete: query_schedule first; only editable=true may change. Copy id/revision. action=update also needs changes; action=delete omits changes. Repeats affect the whole series.\nOnly send fields for the chosen action; no null. Keep enum values literal. saved=true confirms saving. If duplicates must be avoided, query the target day first.\nStructure only; replace angle-bracket placeholders:\n{\"action\":\"create\",\"events\":[{\"title\":\"<event 1 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"},{\"title\":\"<event 2 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"}]}",
+    "query_description": "View schedules visible in this chat, including inherited global and group schedules. Search occurrences by date or keyword, or list all rules including disabled schedules. Before updating or deleting, use this tool to obtain the record ID, revision, and whether editing is allowed.",
+    "manage_description": "Create, update, or delete schedules exclusive to this chat. Schedules give the assistant context and can pause interjections or proactive chat during an event; they do not create timed reminders. Before updating or deleting, call query_schedule and use only records with editable=true (editing allowed). Global management is disabled. For global operations, explain that an administrator must enable it; do not create a chat-only substitute. Only saved=true confirms saving.",
     "query_parameters": {
       "type": "object",
       "additionalProperties": false,
@@ -2334,41 +2334,41 @@
             "range",
             "catalog"
           ],
-          "description": "range (default): first occurrence per rule in the date range. catalog: all rules including disabled ones; dates are ignored. Useful for finding id/revision before edits."
+          "description": "range (default): enabled schedules overlapping the date range; only the first matching occurrence per rule is returned. status describes that occurrence, not the entire repeating rule. catalog: all rules in the selected scope, including disabled ones; date parameters are ignored. Useful for finding a target before editing. Both modes support keyword."
         },
         "start_date": {
           "type": "string",
-          "description": "Optional real start date as YYYY-MM-DD. Omit to start now. For one day, use the same date as end_date."
+          "description": "Optional inclusive start date, YYYY-MM-DD, from midnight. For one day, set start_date and end_date to that date. If omitted, normally starts now; if only end_date is supplied and that day has passed, searches historical occurrences through that day. Valid years: 1900–2199."
         },
         "end_date": {
           "type": "string",
-          "description": "Optional real end date as YYYY-MM-DD, inclusive. Omit for no end limit. For one day, use the same date as start_date."
+          "description": "Optional inclusive end date, YYYY-MM-DD. Omit for no end date limit. If start_date is provided, cannot precede it. Must be a real date in 1900–2199."
         },
         "keyword": {
           "type": "string",
-          "description": "Optional title/description keyword filter."
+          "description": "Optional text contained in a schedule title or description, case-insensitive. Omit when no keyword filter is needed."
         }
       }
     },
     "create_fields": {
-      "events": "create only: nonempty array, even for one item; batch items with title/start_date. Omit for update/delete.",
-      "title": "Required title, 1–80 characters.",
-      "description": "Description, up to 1000 characters; default empty.",
-      "start_date": "Required real YYYY-MM-DD, year 1900–2199; no today/placeholders. Use run date context or query result now.",
-      "until": "Last start date for repeats, YYYY-MM-DD inclusive; empty means unlimited.",
-      "enabled": "Default true; false creates a disabled rule.",
-      "time_mode": "Default 全天 (all-day); set 时段 for start/end times. Omit for Cron.",
-      "start_time": "Required for ordinary 时段: HH:MM. Omit for all-day/Cron.",
-      "end_time": "Required for ordinary 时段: HH:MM. Earlier means next day; cannot equal start. Omit for all-day/Cron.",
-      "repeat": "Default 不重复=once; 每天=daily, 每周=selected weekdays, 每年=start month/day yearly, Cron=expression.",
-      "weekdays": "Required only for 每周: at least one value, e.g. [\"周一\",\"周五\"].",
-      "cron": "Required only for Cron: minute hour day month weekday, e.g. 0 7 * * *.",
-      "cron_duration_minutes": "Cron only: integer 1–1440 minutes; default 60.",
-      "pause_interjection": "true pauses interjections during the event; default false.",
-      "pause_proactive": "true pauses proactive chat during the event; default false."
+      "events": "create only: an array of one or more new schedules, even for one item. Each needs at least title and start_date. Defaults: enabled, all-day, no repetition. Shape: [{\"title\":\"<schedule title>\",\"start_date\":\"<real YYYY-MM-DD date>\"}]. Replace placeholders with task-specific content. Query first if duplicates must be avoided; similar schedules are not merged automatically.",
+      "title": "Required name, 1–80 characters; cannot be whitespace-only.",
+      "description": "Optional schedule details, up to 1000 characters. Omit for no description.",
+      "start_date": "Required real start date, YYYY-MM-DD, in 1900–2199. Repeats become effective on this date. Resolve relative dates using current date context or query result now; do not submit words such as today or example placeholders.",
+      "until": "Optional last date a repeating occurrence may start, YYYY-MM-DD inclusive; cannot precede start_date. Omit or use an empty string for no cutoff. Unused for non-repeating schedules.",
+      "enabled": "Default true. false creates a disabled schedule. Disabled schedules do not appear in date queries; use mode=catalog to find them.",
+      "time_mode": "Default 全天 (all-day). An ordinary time range requires 时段 plus both start_time and end_time. For new Cron schedules, omit this to let the tool set 时段; cron_duration_minutes controls each duration.",
+      "start_time": "Required for a new ordinary time-range schedule: start time in 24-hour HH:MM, together with end_time. Omit for all-day/Cron.",
+      "end_time": "Required for a new ordinary time-range schedule: end time in 24-hour HH:MM. Earlier than start_time means the next day; cannot equal the start. Omit for all-day/Cron.",
+      "repeat": "Default 不重复 (once). 每天=daily; 每周=weekly and requires weekdays; 每年=yearly on the month/day of start_date; Cron requires cron. Keep enum values literal, without translating them.",
+      "weekdays": "Required when creating a 每周 schedule: an array of at least one allowed weekday, 周一 through 周日, without duplicates. Omit for other repeat modes.",
+      "cron": "Required for a new Cron schedule: valid five-field expression, minute hour day month weekday, up to 160 characters. Weekdays: 0–7 or mon–sun; Sunday is 0 or 7. Prefer the repeat options for ordinary daily/weekly schedules.",
+      "cron_duration_minutes": "Cron only: integer duration per occurrence, 1–1440 minutes, default 60. No fractional values.",
+      "pause_interjection": "Default false. true pauses interjections while this event is active; false means this schedule does not pause them.",
+      "pause_proactive": "Default false. true pauses proactive chat while this event is active; false means this schedule does not pause it."
     },
-    "global_query_description": "scope=session (default): visible in this chat; global: all shared global rules, including group exclusions, excluding group/targeted rules. For edits, copy the record's own scope, which may differ from the query scope. Dates use the selected scope's timezone.\nRead schedule context; no timed reminders.\nFor one day, set start_date/end_date to the same real YYYY-MM-DD date; omit dates to start now.\nBefore update/delete, mode=catalog finds all rules, including disabled ones. Only editable=true may change; copy that record's id/revision.\nDate queries return the first occurrence per rule in range; status describes that occurrence, not the whole series.",
-    "global_manage_description": "scope=session (default, exclusive to this chat) or global (shared global). Keep scope at the top level; for edits copy the original record's scope, without moving it. Group/multi-chat targeted rules stay read-only.\nManage schedule context; no timed reminders.\nCreate: action=create + events; each item needs title/start_date. Defaults: all-day, once. Put multiple events in one array.\nTime range: set time_mode=时段 and start_time/end_time (HH:MM).\nUpdate/delete: query_schedule first; only editable=true may change. Copy id/revision. action=update also needs changes; action=delete omits changes. Repeats affect the whole series.\nOnly send fields for the chosen action; no null. Keep enum values literal. saved=true confirms saving. If duplicates must be avoided, query the target day first.\nGlobal create structure; replace angle-bracket placeholders:\n{\"scope\":\"global\",\"action\":\"create\",\"events\":[{\"title\":\"<event 1 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"},{\"title\":\"<event 2 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"}]}",
+    "global_query_description": "Query schedules visible in this chat or shared globally. Search by date or keyword, or list all rules including disabled ones. Global queries include global schedules excluded by this group, but exclude group and chat-specific schedules. Before updating or deleting, obtain the target ID, revision, ownership scope, and whether editing is allowed.",
+    "global_manage_description": "Create, update, or delete schedules exclusive to this chat or shared globally. Schedules provide context and can pause interjections or proactive chat during an event; they do not create timed reminders. Before updating or deleting, call query_schedule, use only records with editable=true (editing allowed), and use the target record's own scope. Group schedules and schedules assigned to multiple chats cannot be updated or deleted. Only saved=true confirms saving.",
     "scope_parameter": {
       "type": "string",
       "enum": [
@@ -2376,29 +2376,29 @@
         "global"
       ],
       "default": "session",
-      "description": "session (default)=this chat; global=shared global. Top level only; for update/delete copy the record's scope."
+      "description": "Operation scope, at the top level. For creation, session (default) creates schedules exclusive to this chat; global creates shared global schedules. Dates/times use the chat or global timezone respectively. For update/delete, copy the target record's own scope, not the top-level scope of the query response. This cannot move a schedule to another owner."
     },
     "manage_fields": {
-      "action": "Required. create: events; update: id/revision/changes; delete: id/revision. Omit other fields; no null.",
-      "id": "update/delete only: copy the queried ID, not the title.",
-      "revision": "update/delete only: copy the same record's revision; query again if stale.",
-      "changes": "update only: nonempty object of changed schedule fields; omissions stay unchanged. No identity/version/scope fields."
+      "action": "Required. create: supply events. update: supply id, revision, changes. delete: supply id, revision. Apart from scope when offered, do not send fields belonging to another action. Omit unused fields; no null. Keep enum values literal. Updating/deleting a repeating schedule affects the whole rule, not a single date.",
+      "id": "update/delete only: copy the target record's id from query_schedule exactly, not its title or an invented ID. The record must have editable=true.",
+      "revision": "update/delete only: copy revision from the same queried record as id. If the tool reports a changed version, query again before using the latest revision.",
+      "changes": "update only: at least one schedule field to change; omitted fields retain their values. No null. Read rule (the existing fields) in the query result before deciding whether related fields also need changes. No id, revision, scope, or events wrapper here."
     },
     "change_fields": {
-      "title": "New title, 1–80 characters.",
-      "description": "New description, up to 1000 characters; empty string clears it.",
-      "start_date": "New start date YYYY-MM-DD, year 1900–2199.",
-      "until": "Last start date for repeats, YYYY-MM-DD inclusive; empty string removes cutoff.",
-      "enabled": "true enables the rule; false disables it.",
-      "time_mode": "全天=all-day or 时段=time range; time ranges need start/end times.",
-      "start_time": "Required for ordinary 时段: HH:MM. Omit for all-day/Cron.",
-      "end_time": "Required for ordinary 时段: HH:MM. Earlier means next day; cannot equal start. Omit for all-day/Cron.",
-      "repeat": "不重复, 每天, 每周, 每年 or Cron. Weekly needs weekdays; Cron needs cron.",
-      "weekdays": "Required only for 每周: at least one value, e.g. [\"周一\",\"周五\"].",
-      "cron": "Required only for Cron: minute hour day month weekday, e.g. 0 7 * * *.",
-      "cron_duration_minutes": "Cron duration, integer 1–1440 minutes.",
-      "pause_interjection": "true pauses interjections during the event; false does not.",
-      "pause_proactive": "true pauses proactive chat during the event; false does not."
+      "title": "New name, 1–80 characters; not whitespace-only. Omit to keep the current name.",
+      "description": "New description, up to 1000 characters. An empty string clears it; omission retains it.",
+      "start_date": "New real start date, YYYY-MM-DD, in 1900–2199. Repeats become effective on this date; yearly repeats also use its month/day. Cannot exceed until if a cutoff exists.",
+      "until": "New last date a repeating occurrence may start, YYYY-MM-DD inclusive; cannot precede start_date. An empty string removes the cutoff; omission retains it.",
+      "enabled": "true enables; false disables. Omit to keep the current state.",
+      "time_mode": "全天 (all-day) or 时段 (time range). After changes, ordinary time ranges need valid start_time/end_time; Cron requires 时段. Reuse suitable values from rule in the query result, or update related fields together when needed.",
+      "start_time": "New ordinary start time, 24-hour HH:MM. Omit to keep the old value. Pair with the resulting end_time; they cannot be equal. Unused for all-day/Cron.",
+      "end_time": "New ordinary end time, 24-hour HH:MM. Omit to keep the old value. Earlier than the resulting start_time means the next day; they cannot be equal. Unused for all-day/Cron.",
+      "repeat": "New repeat mode, using an exact enum value. The resulting 每周 schedule needs nonempty weekdays; Cron needs a valid cron and time_mode=时段. Reuse suitable values from rule, or update related fields together. Omit repeat to retain the current mode.",
+      "weekdays": "New weekly weekday array: at least one allowed value, without duplicates. Omit to retain existing values. Required when changing to weekly if the existing array is empty.",
+      "cron": "New five-field Cron expression, minute hour day month weekday; up to 160 characters, Sunday=0 or 7. Omit to retain it. Required when changing to Cron if the existing value is empty/invalid; also ensure time_mode=时段.",
+      "cron_duration_minutes": "New integer Cron duration, 1–1440 minutes. Omission retains the current value rather than resetting to the default.",
+      "pause_interjection": "true pauses interjections during this event; false means this schedule does not pause them. Omit to retain the current value.",
+      "pause_proactive": "true pauses proactive chat during this event; false means this schedule does not pause it. Omit to retain the current value."
     },
     "types": {
       "string": "a text string",
@@ -2444,6 +2444,8 @@
       "same_time": "end_time cannot equal start_time. For an all-day event use time_mode=全天 and omit start_time/end_time.",
       "event_error": "Event {index} is invalid: {detail}",
       "not_confirmed": "The schedule operation was not confirmed. Query to verify first; do not claim it was saved or immediately create it again. Ask an administrator to inspect logs if needed."
-    }
+    },
+    "query_scope_description": "Query scope. session (default): schedules visible in this chat, including inherited global/group schedules and applicable chat-specific schedules; uses the chat timezone. global: all shared global schedules, including those excluded by this group; uses the global timezone. Each returned record has its own ownership scope, which may differ from this query scope.",
+    "manage_scope_description": "Operation scope, at the top level. For creation, session (default) creates schedules exclusive to this chat; global creates shared global schedules. Dates/times use the chat or global timezone respectively. For update/delete, copy the target record's own scope, not the top-level scope of the query response. This cannot move a schedule to another owner."
   }
 }

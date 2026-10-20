@@ -2322,8 +2322,8 @@
     }
   },
   "tools": {
-    "query_description": "查询当前聊天可见日程；全局和会话组日程只读。\n只读查询日程背景，不创建定时提醒。\n查某天：start_date、end_date 填同一天的真实 YYYY-MM-DD 日期；省略日期从现在开始。\n修改/删除前可用 mode=catalog 查全部规则（含停用），只操作 editable=true；原样复制该条 id、revision。\n按日期查询时，每条重复规则只返回范围内第一次安排；status 是这一次的状态。",
-    "manage_description": "仅管理当前聊天独享的日程，不接受 scope 或目标 SID；需要全局操作时结束任务，等待授权。\n管理日程背景，不创建定时提醒。\n新建：action=create + events；每项至少 title、start_date，默认全天且不重复。多条日程放进同一个 events 数组。\n时段：time_mode=时段，并填 start_time、end_time（HH:MM）。\n修改/删除：先 query_schedule，只操作 editable=true，原样复制 id、revision；action=update 还需 changes，action=delete 不传 changes。重复日程作用于整条规则。\n只传所选操作需要的参数，不填 null；选项值原样填写。saved=true 才算保存成功。要求避免重复时先查目标日期。\n结构示例，尖括号须替换为真实内容：\n{\"action\":\"create\",\"events\":[{\"title\":\"<日程1名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"},{\"title\":\"<日程2名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"}]}",
+    "query_description": "查看当前聊天可见的日程，包括继承的全局和会话组日程。可按日期、关键词查找安排，也可查看包含停用日程的完整规则列表。修改或删除日程前，可用本工具获取日程编号、版本和是否允许修改的信息。",
+    "manage_description": "新建、修改或删除仅属于当前聊天的日程，让助手了解安排；也可设置日程期间暂停智能插话或主动聊天。日程不会创建定时提醒。修改或删除前先用 query_schedule 查询，只有 editable=true（允许修改）的日程才能操作。当前未开启全局管理；如需操作全局日程，请说明需要管理员开启授权，不要改为创建当前聊天日程。返回 saved=true 才表示保存成功。",
     "query_parameters": {
       "type": "object",
       "additionalProperties": false,
@@ -2334,41 +2334,41 @@
             "range",
             "catalog"
           ],
-          "description": "range（默认）：按日期查安排，每条规则返回第一次安排。catalog：查看全部规则，包括停用的，忽略日期；适合修改或删除前找 id、revision。"
+          "description": "range（默认）：查询日期范围内已启用的日程，每条规则只返回与范围重叠的第一次安排；status 表示这次安排的状态，不代表整条重复规则。catalog：列出所选范围的全部日程规则，包含停用的，忽略日期参数；修改或删除前查找目标可选此模式。两种模式都支持 keyword。"
         },
         "start_date": {
           "type": "string",
-          "description": "可选，真实开始日期 YYYY-MM-DD；不填从现在开始。查某天时与 end_date 填同一天。"
+          "description": "可选，查询开始日期 YYYY-MM-DD，从当天零点开始。查某天时，把 start_date 和 end_date 都填成该日期。不填时通常从现在开始；若仅填 end_date 且结束日已过去，则查询截至该日的历史安排。日期须真实有效，年份 1900～2199。"
         },
         "end_date": {
           "type": "string",
-          "description": "可选，真实结束日期 YYYY-MM-DD，包含当天；不填则不限结束日期。查某天时与 start_date 填同一天。"
+          "description": "可选，查询结束日期 YYYY-MM-DD，包含当天；不填则不限结束日期。同时填写开始日期时，不得早于 start_date。日期须真实有效，年份 1900～2199。"
         },
         "keyword": {
           "type": "string",
-          "description": "可选，筛选日程的名称和说明。"
+          "description": "可选，筛选名称或说明中包含此关键词的日程；不区分英文大小写。不需要筛选时省略。"
         }
       }
     },
     "create_fields": {
-      "events": "仅 create：非空数组，一条也用 [ ]；多条合并调用，每项至少 title、start_date。update/delete 省略。",
-      "title": "必填名称，1～80 字。",
-      "description": "说明，最多 1000 字；默认无。",
-      "start_date": "必填真实日期 YYYY-MM-DD，1900～2199 年；不能填“今天”或占位符。参考本轮日期或查询结果 now。",
-      "until": "重复日程最后生效日期 YYYY-MM-DD，含当天；留空不限。",
-      "enabled": "默认 true；false 创建停用日程。",
-      "time_mode": "默认“全天”；填写起止时间须设为“时段”；Cron 省略。",
-      "start_time": "普通“时段”必填 HH:MM；全天/Cron 省略。",
-      "end_time": "普通“时段”必填 HH:MM；早于开始表示跨天，不能相同；全天/Cron 省略。",
-      "repeat": "默认“不重复”；每天、每周、每年分别按日、所选星期、开始日期的月日重复；Cron 按表达式。",
-      "weekdays": "仅“每周”必填，如 [\"周一\",\"周五\"]，至少一项。",
-      "cron": "仅 Cron 必填，五段“分 时 日 月 周”，如 0 7 * * *。",
-      "cron_duration_minutes": "仅 Cron：1～1440 整数分钟，默认 60。",
-      "pause_interjection": "true=期间暂停智能插话；默认 false。",
-      "pause_proactive": "true=期间暂停主动聊天；默认 false。"
+      "events": "仅 create：包含一条或多条新日程的数组，一条也用数组，多条放在同一数组。每条至少填写 title、start_date；默认全天、不重复、启用。结构示例：[{\"title\":\"<日程名称>\",\"start_date\":\"<真实日期 YYYY-MM-DD>\"}]。调用时替换占位符，内容按实际任务填写。需避免重复时先查询；工具不会自动合并相似日程。",
+      "title": "必填，日程名称，1～80 字，不能只填空白。",
+      "description": "可选，日程内容或补充说明，最多 1000 字；省略表示没有说明。",
+      "start_date": "必填，真实开始日期 YYYY-MM-DD，年份 1900～2199。重复日程以此作为开始生效日期。请根据当前日期或查询结果 now 换算“今天”等相对日期，不能提交相对日期文字或示例占位符。",
+      "until": "重复日程可选的截止日期 YYYY-MM-DD，包含当天，限制最后一次安排的开始日期；不能早于 start_date。省略或空字符串表示不限截止日期；不重复日程不用此字段。",
+      "enabled": "是否启用，默认 true。填 false 可创建已停用的日程；停用日程不出现在按日期查询中，可用 mode=catalog 查询。",
+      "time_mode": "默认“全天”。普通时段须填“时段”，并同时提供 start_time、end_time。新建 Cron 日程时可省略，工具会自动设为“时段”，每次持续时间由 cron_duration_minutes 决定。",
+      "start_time": "普通“时段”日程必填开始时间，24 小时制 HH:MM，须与 end_time 一起提供。全天或 Cron 日程省略。",
+      "end_time": "普通“时段”日程必填结束时间，24 小时制 HH:MM。早于 start_time 表示次日结束；不能与开始时间相同。全天或 Cron 日程省略。",
+      "repeat": "重复方式，默认“不重复”。“每天”按天重复；“每周”必须同时提供 weekdays；“每年”按 start_date 的月日重复；“Cron”必须同时提供 cron。选项值原样填写，不要翻译。",
+      "weekdays": "新建“每周”重复日程时必填数组，从周一至周日的允许值中选至少一个，不能重复。其他重复方式省略。",
+      "cron": "新建 Cron 日程时必填有效表达式，五段顺序为“分 时 日 月 周”，最多 160 字。星期可用 0～7 或 mon～sun，周日为 0 或 7。普通每天或每周安排可直接使用 repeat 对应选项。",
+      "cron_duration_minutes": "仅 Cron 使用，每次安排持续的整数分钟数，1～1440，默认 60；不接受小数。",
+      "pause_interjection": "默认 false。true 表示日程进行期间暂停智能插话；false 表示本日程不暂停它。",
+      "pause_proactive": "默认 false。true 表示日程进行期间暂停主动聊天；false 表示本日程不暂停它。"
     },
-    "global_query_description": "scope=session（默认）查当前聊天可见日程；global 查全部共享全局日程，含本组已排除的，不含会话组或指定聊天专属日程。操作时复制结果自己的 scope，可能与查询范围不同。session 用当前聊天时区，global 用全局时区。\n只读查询日程背景，不创建定时提醒。\n查某天：start_date、end_date 填同一天的真实 YYYY-MM-DD 日期；省略日期从现在开始。\n修改/删除前可用 mode=catalog 查全部规则（含停用），只操作 editable=true；原样复制该条 id、revision。\n按日期查询时，每条重复规则只返回范围内第一次安排；status 是这一次的状态。",
-    "global_manage_description": "scope=session（默认，当前聊天独享）或 global（共享全局）。scope 放最外层；修改/删除复制原日程的 scope，不能改变归属。会话组和多聊天专属日程只读。\n管理日程背景，不创建定时提醒。\n新建：action=create + events；每项至少 title、start_date，默认全天且不重复。多条日程放进同一个 events 数组。\n时段：time_mode=时段，并填 start_time、end_time（HH:MM）。\n修改/删除：先 query_schedule，只操作 editable=true，原样复制 id、revision；action=update 还需 changes，action=delete 不传 changes。重复日程作用于整条规则。\n只传所选操作需要的参数，不填 null；选项值原样填写。saved=true 才算保存成功。要求避免重复时先查目标日期。\n全局新建结构示例，尖括号须替换为真实内容：\n{\"scope\":\"global\",\"action\":\"create\",\"events\":[{\"title\":\"<日程1名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"},{\"title\":\"<日程2名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"}]}",
+    "global_query_description": "查看当前聊天可见的日程，或查询共享全局日程。支持按日期、关键词查找，也可列出包括停用日程的全部规则。全局查询包含被当前会话组排除的全局日程，不含会话组或指定聊天专属日程。修改或删除前，可用本工具获取日程编号、版本、归属和是否允许修改的信息。",
+    "global_manage_description": "新建、修改或删除当前聊天独享或共享全局的日程，让助手了解安排；也可设置日程期间暂停智能插话或主动聊天。日程不会创建定时提醒。修改或删除前先用 query_schedule 查询，只操作 editable=true（允许修改）的日程，并使用目标日程自身的 scope。会话组和多个聊天共用的专属日程不能修改或删除。返回 saved=true 才表示保存成功。",
     "scope_parameter": {
       "type": "string",
       "enum": [
@@ -2376,29 +2376,29 @@
         "global"
       ],
       "default": "session",
-      "description": "session（默认）=当前聊天；global=共享全局。放在最外层；修改/删除复制结果的 scope。"
+      "description": "操作范围，放在最外层。新建时，session（默认）创建仅属于当前聊天的日程，global 创建共享全局日程；日期时间分别使用当前聊天或全局时区。修改或删除时，原样复制目标日程自身的 scope，不要使用查询结果最外层的 scope；不能借此改变日程归属。"
     },
     "manage_fields": {
-      "action": "必填。create 新建：events；update 修改：id、revision、changes；delete 删除：id、revision。其余字段省略，不传 null。",
-      "id": "仅 update/delete：从查询结果原样复制编号，不能用名称代替。",
-      "revision": "仅 update/delete：复制同一条查询结果的版本；过期则重新查询。",
-      "changes": "仅 update：只填要改的日程字段，未填保持原样。非空；不含编号、版本或归属字段。"
+      "action": "必填。create=新建，必须传 events；update=修改，必须传 id、revision、changes；delete=删除，必须传 id、revision。除工具提供的 scope 外，不要传其他操作专用的字段。未使用的字段直接省略，不填 null；选项值按允许值原样填写。修改或删除重复日程会影响整条规则，不是只改或删除某一天。",
+      "id": "仅 update/delete：从 query_schedule 返回的目标日程中原样复制 id（编号），不能填写名称，也不要自行编造。目标必须为 editable=true。",
+      "revision": "仅 update/delete：从与 id 相同的那条查询结果中原样复制 revision（版本）。若工具提示版本已变化，先重新查询，再使用新版本操作。",
+      "changes": "仅 update：至少填一个要修改的日程字段，未填字段保留原值；不填 null。先查看查询结果的 rule（原有字段），再决定是否同时修改配套字段。这里只放日程内容，不放 id、revision、scope，也不再套一层 events。"
     },
     "change_fields": {
-      "title": "新名称，1～80 字。",
-      "description": "新说明，最多 1000 字；空字符串清空。",
-      "start_date": "新开始日期 YYYY-MM-DD，1900～2199 年。",
-      "until": "重复日程最后生效日期 YYYY-MM-DD，含当天；空字符串取消截止日期。",
-      "enabled": "true=启用，false=停用。",
-      "time_mode": "“全天”或“时段”；改成时段须有起止时间。",
-      "start_time": "普通“时段”必填 HH:MM；全天/Cron 省略。",
-      "end_time": "普通“时段”必填 HH:MM；早于开始表示跨天，不能相同；全天/Cron 省略。",
-      "repeat": "不重复、每天、每周、每年或 Cron；每周须有 weekdays，Cron 须有 cron。",
-      "weekdays": "仅“每周”必填，如 [\"周一\",\"周五\"]，至少一项。",
-      "cron": "仅 Cron 必填，五段“分 时 日 月 周”，如 0 7 * * *。",
-      "cron_duration_minutes": "Cron 持续分钟数，整数 1～1440。",
-      "pause_interjection": "true=日程期间暂停智能插话，false=不暂停。",
-      "pause_proactive": "true=日程期间暂停主动聊天，false=不暂停。"
+      "title": "新名称，1～80 字，不能只填空白；不改名称则省略。",
+      "description": "新说明，最多 1000 字；空字符串清空说明，省略保留原说明。",
+      "start_date": "新开始日期 YYYY-MM-DD，年份 1900～2199。重复日程从此日期开始生效；每年重复也以此日期的月日为准。若有 until，须保证不晚于 until。",
+      "until": "重复日程的新截止日期 YYYY-MM-DD，包含当天，限制最后一次安排的开始日期；不得早于 start_date。空字符串取消截止日期，省略保留原值。",
+      "enabled": "true=启用，false=停用；省略保留原状态。",
+      "time_mode": "“全天”或“时段”。修改后若为普通时段，必须具备有效的 start_time、end_time；若为 Cron，必须是“时段”。这些配套字段可以沿用查询结果 rule 中的原值，缺少合适值时须一起修改。",
+      "start_time": "普通时段的新开始时间，24 小时制 HH:MM；省略保留原值。与修改后的 end_time 配合，两者不能相同。全天或 Cron 日程不用。",
+      "end_time": "普通时段的新结束时间，24 小时制 HH:MM；省略保留原值。早于修改后的 start_time 表示次日结束，不能相同。全天或 Cron 日程不用。",
+      "repeat": "新的重复方式，按允许值原样填写。修改后若为“每周”，须有非空 weekdays；若为“Cron”，须有有效 cron 且 time_mode=时段。配套字段可沿用 rule 中的原值，缺少合适值时须一起修改；省略 repeat 则保留原方式。",
+      "weekdays": "每周重复的新星期数组，从允许值中选至少一个，不能重复。省略保留原值；若改为每周且原值为空，必须提供。",
+      "cron": "新的 Cron 表达式，五段“分 时 日 月 周”，最多 160 字，周日为 0 或 7。省略保留原值；若改为 Cron 且原值无效或为空，必须提供，并确保 time_mode=时段。",
+      "cron_duration_minutes": "Cron 每次持续的整数分钟数，1～1440；省略保留原值，不会重置为默认值。",
+      "pause_interjection": "true=日程期间暂停智能插话，false=本日程不暂停；省略保留原值。",
+      "pause_proactive": "true=日程期间暂停主动聊天，false=本日程不暂停；省略保留原值。"
     },
     "types": {
       "string": "文本字符串",
@@ -2444,6 +2444,8 @@
       "same_time": "end_time 不能与 start_time 相同。全天日程用 time_mode=全天，并省略 start_time、end_time。",
       "event_error": "第 {index} 条日程有误：{detail}",
       "not_confirmed": "未能确认日程操作成功。请先查询核对，不要声称已经保存，也不要立即重复创建；必要时请管理员查看日志。"
-    }
+    },
+    "query_scope_description": "查询范围。session（默认）：当前聊天可见的日程，包括继承的全局、会话组及适用的指定聊天日程；使用当前聊天时区。global：全部共享全局日程，包括被当前会话组排除的日程；使用全局时区。查询结果中每条日程的 scope 表示它自身的归属，可能与这里选择的查询范围不同。",
+    "manage_scope_description": "操作范围，放在最外层。新建时，session（默认）创建仅属于当前聊天的日程，global 创建共享全局日程；日期时间分别使用当前聊天或全局时区。修改或删除时，原样复制目标日程自身的 scope，不要使用查询结果最外层的 scope；不能借此改变日程归属。"
   }
 }
