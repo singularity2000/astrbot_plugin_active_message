@@ -17,24 +17,24 @@ from typing import Any, Iterator
 from astrbot.api import FunctionTool
 from jsonschema import Draft202012Validator
 
-from .i18n import catalog
+from .i18n import catalog, normalize_locale, tool_error_detail, tool_text
 from .config import normalize_control_values
 from .schedule import get_timezone
 from .storage import JsonStateFile
 
 
-# Agent 工具文案统一在 .astrbot-plugin/i18n/en-US.json 的 tools 中编辑。
+# Agent 工具文案在 .astrbot-plugin/i18n/*.json 的 tools 中成对维护。
 # JSON Schema 结构和运行校验仍由下方代码维护。
 
 # 1. 查询日程：query_schedule
-QUERY_TOOL_DESCRIPTION = catalog("en-US")["tools"]["query_description"]
+QUERY_TOOL_DESCRIPTION = catalog()["tools"]["query_description"]
 
-QUERY_PARAMETERS = catalog("en-US")["tools"]["query_parameters"]
+QUERY_PARAMETERS = catalog()["tools"]["query_parameters"]
 
 # 2. 管理日程：manage_schedule
-MANAGE_TOOL_DESCRIPTION = catalog("en-US")["tools"]["manage_description"]
+MANAGE_TOOL_DESCRIPTION = catalog()["tools"]["manage_description"]
 
-CREATE_PARAMETER_DESCRIPTIONS = catalog("en-US")["tools"]["create_fields"]
+CREATE_PARAMETER_DESCRIPTIONS = catalog()["tools"]["create_fields"]
 
 # ============================================================================
 # 日程数据、时间规则与页面字段
@@ -978,11 +978,12 @@ class AgendaStore:
 # ============================================================================
 
 
-def create_parameters() -> dict:
+def create_parameters(locale: str = "zh-CN") -> dict:
     """沿用日程字段的类型与允许值，说明取自共用语言资源。"""
     fields = event_schema()["templates"]["event"]["items"]
+    descriptions = catalog(locale)["tools"]["create_fields"]
     properties = {}
-    for key, description in CREATE_PARAMETER_DESCRIPTIONS.items():
+    for key, description in descriptions.items():
         if key == "events":
             continue
         source = fields[key]
@@ -1019,7 +1020,7 @@ def create_parameters() -> dict:
             "events": {
                 "type": "array",
                 "minItems": 1,
-                "description": CREATE_PARAMETER_DESCRIPTIONS["events"],
+                "description": descriptions["events"],
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
@@ -1031,23 +1032,65 @@ def create_parameters() -> dict:
     }
 
 
-def manage_parameters() -> dict:
-    create = create_parameters()["properties"]["events"]
-    # The same fields are already documented under events. Keep their validation
-    # constraints here without repeating every description/default in the prompt.
+def query_parameters(allow_global: bool = False, locale: str = "zh-CN") -> dict:
+    parameters = copy.deepcopy(catalog(locale)["tools"]["query_parameters"])
+    if allow_global:
+        parameters["properties"]["scope"] = copy.deepcopy(catalog(locale)["tools"]["scope_parameter"])
+    return parameters
+
+
+def manage_parameters(allow_global: bool = False, locale: str = "zh-CN") -> dict:
+    texts = catalog(locale)["tools"]
+    create = create_parameters(locale)["properties"]["events"]
+    # Changes have the same constraints as creation but no implicit defaults.
+    # Short field descriptions also work with AstrBot's parameter-only tool mode.
     changes = {key: {attr: value for attr, value in spec.items() if attr not in {"description", "default"}}
                for key, spec in create["items"]["properties"].items()}
-    return {"type": "object", "additionalProperties": False, "required": ["action"],
+    for key, spec in changes.items():
+        spec["description"] = texts["change_fields"][key]
+    parameters = {"type": "object", "additionalProperties": False, "required": ["action"],
             "properties": {
                 "action": {"type": "string", "enum": ["create", "update", "delete"],
-                           "description": "create a batch, update one rule, or delete one entire rule/series."},
+                           "description": texts["manage_fields"]["action"]},
                 "events": create,
-                "id": {"type": "string", "description": "update/delete: exact id returned by query_schedule. Never invent or use a title."},
-                "revision": {"type": "string", "description": "update/delete: exact revision returned for this id. If stale, query again."},
+                "id": {"type": "string", "description": texts["manage_fields"]["id"]},
+                "revision": {"type": "string", "description": texts["manage_fields"]["revision"]},
                 "changes": {"type": "object", "additionalProperties": False, "minProperties": 1,
-                            "description": "update only: fields to change; other fields remain untouched. No id, scope or SID fields.",
+                            "description": texts["manage_fields"]["changes"],
                             "properties": changes},
             }}
+    if allow_global:
+        parameters["properties"]["scope"] = copy.deepcopy(texts["scope_parameter"])
+    return parameters
+
+
+def parameter_error(error: Any, locale: str = "zh-CN") -> str:
+    """Explain the existing validator's first failure without relaxing its rules."""
+    field = ".".join(str(part) for part in error.absolute_path) or tool_text("arguments", locale)
+    constraint = error.validator
+    if constraint == "required":
+        missing = [key for key in error.validator_value if key not in error.instance]
+        return tool_text("missing_fields", locale, field=field, fields=", ".join(missing))
+    if constraint == "additionalProperties":
+        unknown = sorted(str(key) for key in error.instance if key not in error.schema.get("properties", {}))
+        return tool_text("unknown_fields", locale, field=field, fields=", ".join(unknown))
+    if constraint == "type":
+        kind = catalog(locale)["tools"]["types"].get(error.validator_value, str(error.validator_value))
+        return tool_text("field_type", locale, field=field, kind=kind)
+    if constraint == "enum":
+        return tool_text("field_enum", locale, field=field, choices=json.dumps(error.validator_value, ensure_ascii=False))
+    if constraint == "pattern":
+        pattern = "YYYY-MM-DD" if field.endswith("start_date") else "HH:MM"
+        return tool_text("field_format", locale, field=field, pattern=pattern)
+    if constraint in {"minLength", "minItems", "minProperties"}:
+        return tool_text("field_empty", locale, field=field)
+    if constraint == "maxLength":
+        return tool_text("field_length", locale, field=field, maximum=error.validator_value)
+    if constraint in {"minimum", "maximum"}:
+        return tool_text("field_bounds", locale, field=field, minimum=error.schema.get("minimum", ""), maximum=error.schema.get("maximum", ""))
+    if constraint == "uniqueItems":
+        return tool_text("field_unique", locale, field=field)
+    return tool_text("invalid_parameters", locale, field=field)
 
 
 def session_owned(row: dict, sid: str) -> bool:
@@ -1055,95 +1098,79 @@ def session_owned(row: dict, sid: str) -> bool:
     return not row.get("group_id") and row.get("target_sids") == [sid]
 
 
-def rule_details(row: dict, sid: str) -> dict:
+def global_owned(row: dict) -> bool:
+    """Only shared global rules, never group or SID-targeted rules."""
+    return not row.get("group_id") and not row.get("target_sids")
+
+
+def rule_details(row: dict, sid: str, *, allow_global: bool = False) -> dict:
     """Stable identity, optimistic concurrency token and editable rule fields."""
     fields = CREATE_PARAMETER_DESCRIPTIONS.keys() - {"events"}
-    return {"id": row["id"], "revision": _hash(row), "editable": session_owned(row, sid),
+    return {"id": row["id"], "revision": _hash(row),
+            "editable": session_owned(row, sid) or (allow_global and global_owned(row)),
             "scope": "group" if row.get("group_id") else "session" if row.get("target_sids") else "global",
             "rule": {key: copy.deepcopy(value) for key, value in row.items() if key in fields}}
 
 
-def prepare_events(events: Any, sid: str) -> list[dict]:
-    """检查整批新增日程，由程序补全当前会话归属和内部编号。"""
+def prepare_events(events: Any, sid: str, *, scope: str = "session", locale: str = "zh-CN") -> list[dict]:
+    """检查整批新增日程，由程序补全归属和内部编号。"""
+    if scope not in {"session", "global"}:
+        raise ValueError(tool_text("invalid_scope", locale))
     if not isinstance(events, list) or not events:
-        raise ValueError("events 必须包含至少一条日程。")
+        raise ValueError(tool_text("events_required", locale))
     fields = event_schema()["templates"]["event"]["items"]
-    event_spec = create_parameters()["properties"]["events"]["items"]
+    event_spec = create_parameters(locale)["properties"]["events"]["items"]
     validator = Draft202012Validator(event_spec)
     rows = []
     for index, event in enumerate(events):
         try:
             if not isinstance(event, dict):
-                raise ValueError("events 每项必须是日程对象。")
+                raise ValueError(tool_text("event_object", locale))
             error = next(validator.iter_errors(event), None)
             if error is not None:
-                field_name = ".".join(str(part) for part in error.absolute_path)
-                if error.validator == "required":
-                    missing = [key for key in event_spec["required"] if key not in event]
-                    raise ValueError("缺少必填字段：" + "、".join(missing) + "。")
-                if error.validator == "additionalProperties":
-                    unknown = [str(key) for key in event if key not in event_spec["properties"]]
-                    raise ValueError("不支持的字段：" + "、".join(unknown) + "；请省略。")
-                if error.validator == "type":
-                    kind = {
-                        "string": "字符串", "boolean": "true 或 false",
-                        "integer": "整数", "array": "数组",
-                    }.get(error.validator_value, "正确类型")
-                    raise ValueError(f"{field_name}：必须填写{kind}，不能用 null 代替省略。")
-                if error.validator == "enum":
-                    raise ValueError(f"{field_name}：请选择 " + "、".join(error.validator_value) + "。")
-                if error.validator == "pattern":
-                    pattern = "YYYY-MM-DD" if field_name == "start_date" else "HH:MM（24 小时制）"
-                    raise ValueError(f"{field_name}：格式应为 {pattern}。")
-                if error.validator == "maxLength":
-                    raise ValueError(f"{field_name}：最多 {error.validator_value} 字。")
-                if error.validator in {"minimum", "maximum"}:
-                    raise ValueError(f"{field_name}：填写 1～1440 的整数分钟。")
-                if error.validator == "uniqueItems":
-                    raise ValueError(f"{field_name}：星期不能重复。")
-                raise ValueError(f"{field_name}：不得为空；不用时请省略字段。")
+                raise ValueError(parameter_error(error, locale))
             for key, value in event.items():
                 if isinstance(value, str) and not value.strip() and key not in {"description", "until"}:
-                    raise ValueError(f"{key}：不得为空；不用时请省略字段。")
+                    raise ValueError(tool_text("field_empty", locale, field=key))
             if "cron_duration_minutes" in event and type(event["cron_duration_minutes"]) is not int:
-                raise ValueError("cron_duration_minutes：必须填写整数分钟。")
+                raise ValueError(tool_text("cron_integer", locale))
             row = {key: copy.deepcopy(meta["default"]) for key, meta in fields.items()}
             row.update(copy.deepcopy(event))
             row.update(
                 id="event_" + uuid.uuid4().hex,
                 group_id="",
-                target_sids=[sid],
+                target_sids=[] if scope == "global" else [sid],
                 __template_key="event",
             )
             try:
                 parse_date(row["start_date"])
             except ValueError as exc:
-                raise ValueError("start_date：" + str(exc)) from None
+                raise ValueError(tool_text("date_invalid", locale)) from None
             if row["repeat"] == "每周" and not event.get("weekdays"):
-                raise ValueError("weekdays：“每周”重复必须提供至少一个星期。")
+                raise ValueError(tool_text("weekdays_required", locale))
             if row["repeat"] == "Cron":
                 if not event.get("cron"):
-                    raise ValueError("cron：“Cron”重复必须提供表达式。")
+                    raise ValueError(tool_text("cron_required", locale))
                 try:
                     cron_trigger(row["cron"], timezone.utc)
                 except (ValueError, KeyError) as exc:
-                    raise ValueError("cron：表达式无效，请检查分、时、日、月、周五段。") from exc
+                    raise ValueError(tool_text("cron_invalid", locale)) from exc
                 row["time_mode"] = "时段"
             elif row["time_mode"] == "时段":
                 missing = [key for key in ("start_time", "end_time") if key not in event]
                 if missing:
-                    raise ValueError("普通时段日程必须提供：" + "、".join(missing) + "。")
+                    raise ValueError(tool_text("time_fields_required", locale, fields=", ".join(missing)))
                 if row["start_time"] == row["end_time"]:
-                    raise ValueError("end_time：不能与 start_time 相同；整天安排请选择“全天”。")
-            AgendaEvent.from_raw(row, "当前会话")
+                    raise ValueError(tool_text("same_time", locale))
+            AgendaEvent.from_raw(row, "全局" if scope == "global" else "当前会话")
             rows.append(row)
         except (ValueError, TypeError, AttributeError) as exc:
-            raise ValueError(f"第 {index + 1} 条日程：{exc}") from None
+            raise ValueError(tool_text("event_error", locale, index=index + 1, detail=tool_error_detail(str(exc), locale))) from None
     return rows
 
 
 class ScheduleTool(FunctionTool):
-    """原生 Agent 日程工具；查询和管理都绑定当前会话。"""
+    """原生日程工具；范围选项跟随全局授权，调用时重新校验。"""
 
     def __init__(self, plugin: Any, sid: str | None = None, *, manage: bool = False) -> None:
         super().__init__(
@@ -1152,29 +1179,43 @@ class ScheduleTool(FunctionTool):
             parameters=manage_parameters() if manage else copy.deepcopy(QUERY_PARAMETERS),
         )
         self.plugin, self.sid, self.manage = plugin, sid, manage
+        self.refresh_schema()
+
+    def refresh_schema(self) -> None:
+        """Refresh registered schemas too: native future tasks skip request hooks."""
+        allow_global = self.plugin.settings.raw["agenda"]["allow_global_management"]
+        key = ("global_" if allow_global else "") + ("manage_description" if self.manage else "query_description")
+        self.locale = normalize_locale(getattr(self.plugin, "_agenda_tool_locale", None))
+        self.description = catalog(self.locale)["tools"][key]
+        self.parameters = manage_parameters(allow_global, self.locale) if self.manage else query_parameters(allow_global, self.locale)
 
     async def call(self, context: Any, **kwargs: Any) -> str:
         event = context.context.event
         sid = self.sid or event.unified_msg_origin
         if (self.sid and event.unified_msg_origin != self.sid) or not self.plugin.agenda_allowed(sid):
             return json.dumps(
-                {"ok": False, "error": "当前会话未允许使用日程，或插件已关闭。"},
+                {"ok": False, "error": tool_text("disabled", self.locale)},
                 ensure_ascii=False,
             )
         try:
+            # Reuse the framework's WebUI permission policy even when a persona
+            # selects the raw tool or a request uses a conversation-bound copy.
+            manager = self.plugin.context.get_llm_tool_manager()
+            check_permission = getattr(manager, "_check_tool_permission", None)
+            if callable(check_permission):
+                error = await check_permission(self.name, context)
+                if error is not None:
+                    return error
             if self.manage:
                 result = await self.plugin.manage_schedules(sid, kwargs, event)
             else:
-                allowed = set(QUERY_PARAMETERS["properties"])
-                if set(kwargs) - allowed or any(not isinstance(value, str) for value in kwargs.values()):
-                    raise ValueError("查询参数需要文本，且不能包含其他会话或不支持的字段。")
                 result = await self.plugin.query_schedules(sid, kwargs)
             return json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":"))
         except ValueError as exc:
-            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+            return json.dumps({"ok": False, "error": tool_error_detail(str(exc), self.locale)}, ensure_ascii=False)
         except Exception as exc:
             self.plugin.observer.error("AGENDA_TOOL_FAILED", exc, sid=sid)
             return json.dumps(
-                {"ok": False, "error": "Schedule operation not confirmed. Check logs; do not claim it was saved."},
+                {"ok": False, "error": tool_text("not_confirmed", self.locale)},
                 ensure_ascii=False,
             )

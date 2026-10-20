@@ -99,6 +99,11 @@ class PageAPI:
     async def bootstrap(self):
         try:
             request = self._auth()
+            preferences = await self._read_preferences(request.username)
+            locale = preferences.get("language")
+            set_locale = getattr(self.plugin, "set_agenda_tool_locale", None)
+            if locale in {"zh-CN", "en-US"} and callable(set_locale) and locale != getattr(self.plugin, "_agenda_tool_locale", None):
+                await set_locale(locale)
             async with self.plugin._settings_lock:
                 await self.plugin.agenda_store.check_current()
                 config = public_config(self.plugin.settings.raw)
@@ -112,7 +117,7 @@ class PageAPI:
             return self._response({"config":config, "schema":metadata, "agenda_data":agenda_data,
                                    "revision":revision, "providers":providers, "errors":self.plugin.settings.blocking_errors(),
                                    "warnings":self.plugin.settings.warnings, "placeholders":placeholder_catalog(),
-                                   "preferences":await self._read_preferences(request.username), "translations": catalogs(),
+                                   "preferences":preferences, "translations": catalogs(),
                                    "diagnostics":{code: {"message": message,
                                        "action": DIAGNOSTIC_ACTIONS.get(code, ("", None))[0],
                                        "tab": DIAGNOSTIC_ACTIONS.get(code, ("", None))[1]}
@@ -427,7 +432,7 @@ class PageAPI:
             return {}
 
     async def preferences(self):
-        """UI-only preferences never save/reload operational plugin settings."""
+        """Save display preferences; an explicit language choice also labels tools."""
         try:
             data = await self._body()
             request = self._auth()
@@ -457,6 +462,10 @@ class PageAPI:
                 prefs = await self._read_preferences(request.username, strict=True)
                 prefs.update(patch)
                 await self.plugin.put_kv_data(self._preference_key(request.username), prefs)
+                if "language" in patch:
+                    set_locale = getattr(self.plugin, "set_agenda_tool_locale", None)
+                    if callable(set_locale):
+                        await set_locale(patch["language"])
             return self._response(prefs)
         except (ValueError, PermissionError) as exc:
             return self._response(error=str(exc))

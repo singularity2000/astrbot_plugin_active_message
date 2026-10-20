@@ -134,7 +134,7 @@
         group=selectedGroup;calendar=null;
         const gs=state.schema.session_groups.templates.group.items,box=section(t("pages.console.ui.s21649f1663"),t("pages.console.ui.sf42007e551"));box.id='agenda-settings';
         box.append(group?field('agenda_mode',gs.agenda_mode,group,['agenda','enabled'],true):field('enabled',state.schema.agenda.items.enabled,state.config.agenda,['agenda','enabled']));
-        if(!group)box.append(field('outside_scope',state.schema.agenda.items.outside_scope,state.config.agenda,['agenda','outside_scope']));
+        if(!group)for(const key of ['outside_scope','allow_global_management'])box.append(field(key,state.schema.agenda.items[key],state.config.agenda,['agenda',key]));
         for(const key of ['preview_days','max_items'])box.append(group?field('agenda_'+key,gs['agenda_'+key],group,['agenda',key],true):field(key,state.schema.agenda.items[key],state.config.agenda,['agenda',key]));
         if(!group){const advanced=el('details',undefined,'agenda-guidance');advanced.append(el('summary',t("pages.console.ui.s4418c7624d")),field('background_description',state.schema.agenda.items.background_description,state.config.agenda,['agenda','background_description']));box.append(advanced);}
         if(group)box.append(el('small',t("pages.console.ui.sc07164b7b5"),'muted'));

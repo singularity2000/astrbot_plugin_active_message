@@ -9,6 +9,11 @@ from pathlib import Path
 
 LOCALES = ("zh-CN", "en-US")
 ROOT = Path(__file__).resolve().parents[1] / ".astrbot-plugin" / "i18n"
+TOOL_LOCALE_KEY = "agenda_tool_locale"
+
+
+def normalize_locale(locale: str | None) -> str:
+    return locale if locale in LOCALES else "zh-CN"
 
 
 @lru_cache(maxsize=2)
@@ -20,6 +25,23 @@ def catalog(locale: str = "zh-CN") -> dict:
 
 def catalogs() -> dict:
     return {locale: catalog(locale) for locale in LOCALES}
+
+
+def tool_text(key: str, locale: str = "zh-CN", **values) -> str:
+    """Localize plugin-produced tool guidance, never schedule/user content."""
+    return catalog(normalize_locale(locale))["tools"]["messages"][key].format(**values)
+
+
+def tool_error_detail(text: str, locale: str = "zh-CN") -> str:
+    """Reuse translations for exact framework/plugin error labels when present."""
+    if normalize_locale(locale) == "zh-CN":
+        return text
+    source = catalog()["pages"]["console"]["runtime"]
+    translated = catalog("en-US")["pages"]["console"]["runtime"]
+    key = "s" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+    if key in translated:
+        return translated[key]
+    return next((translated[key] for key, value in source.items() if value == text and key in translated), text)
 
 
 def display_text(source: str) -> str:

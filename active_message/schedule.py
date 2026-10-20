@@ -52,7 +52,7 @@ def current_mood(now: datetime, sleep_hours: str, active_hours: str) -> str:
     return "正常"
 
 
-PROACTIVE_SCHEDULE_VERSION = 3
+PROACTIVE_SCHEDULE_VERSION = 4
 
 
 def _day_intervals(day: datetime, sleep_ranges: list[tuple[int, int]], active_ranges: list[tuple[int, int]]) -> list[tuple[datetime, datetime]]:
@@ -75,12 +75,13 @@ def _day_intervals(day: datetime, sleep_ranges: list[tuple[int, int]], active_ra
 
 def choose_proactive_schedule(
     *, now: datetime, timezone_name: str, sleep_hours: str, active_hours: str,
-    attempts: int, remaining_only: bool = False,
+    attempts: int, cooldown_seconds: float = 60.0, remaining_only: bool = False,
 ) -> list[datetime]:
-    """按整天有效活跃时间分层随机抽样，只返回尚未过去的机会。
+    """拼接有效活跃时间后直接随机取点，只返回尚未过去的机会。
 
-    每份在中间 60% 内独立随机取点，相邻份至少隔开一份时长的 40%；
-    跨时段按有效秒数映射。中途启动不会把全天机会挤进剩余时间。
+    按每日额度取点，不预先均分。先预留相邻机会的冷却间隔（至少一分钟），
+    再在剩余时间中独立随机取点、排序并加回间隔；不反复碰运气重抽。
+    时间不足则只安排放得下的次数。中途启动不会把全天机会挤进剩余时间。
     remaining_only 仅供用户手动重排：将指定数量重新分布到当天剩余活跃区间。
     """
     tz = get_timezone(timezone_name) if timezone_name else now.tzinfo or get_timezone("")
@@ -92,22 +93,28 @@ def choose_proactive_schedule(
     day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     intervals = _day_intervals(day, sleep_ranges, active_ranges)
     if remaining_only:
-        cutoff = now.astimezone(timezone.utc)
+        cutoff = now.astimezone(timezone.utc) + timedelta(microseconds=1)
         intervals = [(max(start, cutoff), end) for start, end in intervals if end > cutoff]
-    total = sum((end - start).total_seconds() for start, end in intervals)
+    # Integer microseconds keep samples strictly inside half-open intervals,
+    # even for dense plans or random draws at the edge of an interval.
+    lengths = [(end - start) // timedelta(microseconds=1) for start, end in intervals]
+    total = sum(lengths)
     count = int(attempts)
     if count <= 0 or total <= 0:
         return []
+    gap_seconds = max(60.0, cooldown_seconds)
+    # A cooldown longer than the whole day allows only one opportunity. Clamp
+    # before converting so even very large valid cooldown values cannot overflow.
+    gap = total if gap_seconds >= total / 1_000_000 else round(gap_seconds * 1_000_000)
+    count = min(count, (total - 1) // gap + 1)
+    available = total - (count - 1) * gap
+    offsets = sorted(random.randrange(available) for _ in range(count))
     points: list[datetime] = []
-    for index in range(count):
-        left = total * index / count
-        right = total * (index + 1) / count
-        width = right - left
-        target = random.uniform(left + width * .2, left + width * .8)
-        for start, end in intervals:
-            length = (end - start).total_seconds()
+    for index, offset in enumerate(offsets):
+        target = offset + index * gap
+        for (start, end), length in zip(intervals, lengths):
             if target < length:
-                point = start + timedelta(seconds=target)
+                point = start + timedelta(microseconds=target)
                 if point > now.astimezone(timezone.utc) and point < end:
                     points.append(point.astimezone(tz))
                 break

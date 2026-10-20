@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.5.0"
+PLUGIN_VERSION = "1.6.0"
 
 import asyncio
+import copy
 import hashlib
 import json
 import random
@@ -22,8 +23,9 @@ from astrbot.core.platform.message_type import MessageType
 from .active_message.agenda import (
     AgendaStore, AgendaStoreError, ScheduleTool,
     AgendaEvent, context_text, prepare_events, publish_agenda_schema,
-    manage_parameters, rule_details, session_owned,
+    global_owned, manage_parameters, parameter_error, query_parameters, rule_details, session_owned,
 )
+from .active_message.i18n import TOOL_LOCALE_KEY, normalize_locale, tool_text
 from .active_message.context_input import ContextUnavailable, group_history_limit, read_context
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
@@ -90,10 +92,19 @@ class ActiveMessagePlugin(Star):
         self._proactive_valid = True
         self._config_errors = {}
         self._warned: set[str] = set()
+        self._agenda_tool_locale = "zh-CN"
         # Native future tasks build their own Agent without OnLLMRequest. The
         # registered tools derive their SID from that Agent's event as well.
         self._agenda_tools = [ScheduleTool(self), ScheduleTool(self, manage=True)]
         self.context.add_llm_tools(*self._agenda_tools)
+
+    async def set_agenda_tool_locale(self, locale: str) -> None:
+        """Remember the console's explicit language choice for all Agent entries."""
+        locale = normalize_locale(locale)
+        await self.put_kv_data(TOOL_LOCALE_KEY, locale)
+        self._agenda_tool_locale = locale
+        for tool in self._agenda_tools:
+            tool.refresh_schema()
 
     def _entry_for(self, sid: str | None = None):
         return self.settings.for_sid(sid) if sid else self.settings.global_entry
@@ -136,13 +147,17 @@ class ActiveMessagePlugin(Star):
                 and (self.scopes.match(sid)[0] or self.settings.raw["agenda"]["outside_scope"])
                 and session_allows_plugin(self.context, sid, PLUGIN_ID))
 
-    async def create_schedules(self, sid: str, events: Any, event: AstrMessageEvent) -> dict:
+    async def create_schedules(self, sid: str, events: Any, event: AstrMessageEvent, *, scope: str = "session") -> dict:
+        locale = getattr(self, "_agenda_tool_locale", "zh-CN")
         async with self._settings_lock:
             if event.unified_msg_origin != sid or not self.agenda_allowed(sid):
-                raise ValueError("本会话日程功能已关闭，未创建。")
-            rows = prepare_events(events, sid)
+                raise ValueError(tool_text("disabled", locale))
+            allow_global = self.settings.raw["agenda"]["allow_global_management"]
+            if scope == "global" and not allow_global:
+                raise ValueError(tool_text("global_disabled", locale))
+            rows = prepare_events(events, sid, scope=scope, locale=locale)
             # Repeated tool calls in the same Agent event must not duplicate a batch.
-            signature = json.dumps(events, sort_keys=True, ensure_ascii=False)
+            signature = json.dumps({"scope": scope, "events": events}, sort_keys=True, ensure_ascii=False)
             created = event.get_extra("_active_message_created_schedules", {})
             if signature in created:
                 return created[signature]
@@ -161,60 +176,95 @@ class ActiveMessagePlugin(Star):
             self.plugin_config = candidate.config
             publish_agenda_schema(self.config_raw, candidate.schema)
             self._alarm.wake()
-            result = {"created": [rule_details(row, sid) for row in rows], "sid": sid,
-                      "timezone": str(self._agenda_now(sid).tzinfo), "saved": True}
+            result = {"created": [rule_details(row, sid, allow_global=allow_global) for row in rows],
+                      "sid": sid, "scope": scope,
+                      "timezone": str(self._agenda_now(None if scope == "global" else sid).tzinfo), "saved": True}
             created[signature] = result
             event.set_extra("_active_message_created_schedules", created)
             return result
 
     async def query_schedules(self, sid: str, arguments: dict) -> dict:
+        from jsonschema import Draft202012Validator
+        locale = getattr(self, "_agenda_tool_locale", "zh-CN")
         async with self._settings_lock:
             if not self.agenda_allowed(sid):
-                raise ValueError("Schedules are disabled for this conversation.")
-            entry = self._entry_for(sid)
-            now = self._agenda_now(sid)
+                raise ValueError(tool_text("disabled", locale))
+            allow_global = self.settings.raw["agenda"]["allow_global_management"]
+            error = next(Draft202012Validator(query_parameters(allow_global, locale)).iter_errors(arguments), None)
+            if error:
+                if not allow_global and isinstance(arguments, dict) and arguments.get("scope") == "global":
+                    raise ValueError(tool_text("global_disabled", locale))
+                raise ValueError(parameter_error(error, locale))
+            arguments = dict(arguments)
+            scope = arguments.pop("scope", "session")
+            entry = self.settings.global_entry if scope == "global" else self._entry_for(sid)
+            if not entry.valid("agenda"):
+                raise ValueError(tool_text("configuration_invalid", locale))
+            now = self._agenda_now(None if scope == "global" else sid)
             rows = {row["id"]: row for row in entry.raw["agenda"]["events"]}
             if arguments.get("mode") == "catalog":
                 keyword = arguments.get("keyword", "").casefold()
-                records = [rule_details(row, sid) | {"title": row["title"], "enabled": row["enabled"]}
+                records = [rule_details(row, sid, allow_global=allow_global) | {"title": row["title"], "enabled": row["enabled"]}
                            for row in rows.values()
                            if not keyword or keyword in (row["title"] + " " + row.get("description", "")).casefold()]
-                return {"now": now.isoformat(), "mode": "catalog", "events": records,
-                        "note": "All visible rules, including disabled. Only editable=true rules can be managed."}
+                return {"now": now.isoformat(), "timezone": str(now.tzinfo), "scope": scope,
+                        "mode": "catalog", "events": records,
+                        "note": tool_text("catalog_note", locale)}
             result = await asyncio.to_thread(entry.agenda.query, now, **arguments)
-            result["events"] = [row | rule_details(rows[row["id"]], sid) for row in result["events"]]
+            result.update(scope=scope, timezone=str(now.tzinfo))
+            result["events"] = [row | rule_details(rows[row["id"]], sid, allow_global=allow_global) for row in result["events"]]
+            result["occurrences"] = tool_text("occurrences", locale)
+            for row in result["events"]:
+                if row.get("status") in {"ended", "ongoing", "upcoming"}:
+                    row["status_label"] = tool_text("status_" + row["status"], locale)
             return result
 
     async def manage_schedules(self, sid: str, arguments: dict, event: AstrMessageEvent) -> dict:
         """Validate scope and every field in code, regardless of model instructions."""
         from jsonschema import Draft202012Validator
+        locale = getattr(self, "_agenda_tool_locale", "zh-CN")
         if event.unified_msg_origin != sid:
-            raise ValueError("Only the current conversation can be managed.")
-        if next(Draft202012Validator(manage_parameters()).iter_errors(arguments), None):
-            raise ValueError("Invalid arguments. Use action=create + events, update + id/revision/changes, or delete + id/revision. Omit unused fields and null.")
+            raise ValueError(tool_text("conversation_mismatch", locale))
+        allow_global = self.settings.raw["agenda"]["allow_global_management"]
+        action = arguments.get("action") if isinstance(arguments, dict) else None
+        if action in {"create", "update", "delete"}:
+            required = {"action", "events"} if action == "create" else {"action", "id", "revision"} | ({"changes"} if action == "update" else set())
+            if set(arguments) - {"scope"} != required:
+                missing = required - set(arguments)
+                extra = set(arguments) - required - {"scope"}
+                raise ValueError(tool_text("action_fields", locale, action=action, required=", ".join(sorted(required)),
+                                           missing=", ".join(sorted(missing)) or "—", extra=", ".join(sorted(extra)) or "—"))
+        error = next(Draft202012Validator(manage_parameters(allow_global, locale)).iter_errors(arguments), None)
+        if error:
+            if not allow_global and isinstance(arguments, dict) and arguments.get("scope") == "global":
+                raise ValueError(tool_text("global_disabled", locale))
+            raise ValueError(parameter_error(error, locale))
         action = arguments["action"]
-        required = {"action", "events"} if action == "create" else {"action", "id", "revision"} | ({"changes"} if action == "update" else set())
-        if set(arguments) != required:
-            raise ValueError("This action requires exactly: " + ", ".join(sorted(required)))
+        scope = arguments.get("scope", "session")
         if action == "create":
-            return await self.create_schedules(sid, arguments["events"], event)
+            return await self.create_schedules(sid, arguments["events"], event, scope=scope)
         signature = json.dumps(arguments, sort_keys=True, ensure_ascii=False)
         async with self._settings_lock:
             if not self.agenda_allowed(sid):
-                raise ValueError("Schedules are disabled for this conversation.")
+                raise ValueError(tool_text("disabled", locale))
+            # Recheck after acquiring the lock: authorization can change while
+            # this Agent is waiting, even if its tool schema still offers global.
+            allow_global = self.settings.raw["agenda"]["allow_global_management"]
+            if scope == "global" and not allow_global:
+                raise ValueError(tool_text("global_disabled", locale))
             previous = event.get_extra("_active_message_managed_schedules", {})
             if signature in previous:
                 return previous[signature]
             raw = self.agenda_store.view(self.config_raw)
             rows = raw["agenda"]["events"]
             row = next((row for row in rows if row["id"] == arguments["id"]), None)
-            if row is None or not session_owned(row, sid):
-                raise ValueError("This schedule is missing or read-only. Only schedules exclusive to the CURRENT conversation may be managed; query_schedule again.")
+            if row is None or not (global_owned(row) if scope == "global" else session_owned(row, sid)):
+                raise ValueError(tool_text("read_only_or_scope", locale))
             if rule_details(row, sid)["revision"] != arguments["revision"]:
-                raise ValueError("This schedule changed since the query. Query it again before updating/deleting.")
+                raise ValueError(tool_text("revision_changed", locale))
             if action == "update":
                 replacement = row | arguments["changes"]
-                AgendaEvent.from_raw(replacement, "指定会话")
+                AgendaEvent.from_raw(replacement, "全局" if scope == "global" else "指定会话")
                 rows[rows.index(row)] = replacement
             else:
                 rows.remove(row)
@@ -225,8 +275,8 @@ class ActiveMessagePlugin(Star):
                 raise ValueError("; ".join(dict.fromkeys(agenda_errors)))
             await self.apply_agenda(candidate, expected_revision=self.agenda_store.revision,
                                     expected_config_revision=self.agenda_store.config_revision(self.config_raw))
-            result = {"action": action, "id": row["id"], "saved": True, "entire_series": True,
-                      **({"schedule": rule_details(replacement, sid)} if action == "update" else {})}
+            result = {"action": action, "id": row["id"], "scope": scope, "saved": True, "entire_series": True,
+                      **({"schedule": rule_details(replacement, sid, allow_global=allow_global)} if action == "update" else {})}
             previous[signature] = result
             event.set_extra("_active_message_managed_schedules", previous)
             return result
@@ -331,6 +381,14 @@ class ActiveMessagePlugin(Star):
             for entry in [self.settings.global_entry, *self.settings.groups]:
                 entry.errors["agenda"].append(("agenda", "日程数据加载或保存恢复未完成；已保护原数据。请检查 agenda.json 和配置写入权限后重载。"))
         if links_ready:
+            try:
+                read_kv = getattr(self, "get_kv_data", None)
+                self._agenda_tool_locale = normalize_locale(await read_kv(TOOL_LOCALE_KEY, "zh-CN") if read_kv else None)
+            except Exception as exc:
+                self._agenda_tool_locale = "zh-CN"
+                self.observer.error("PAGE_PREFERENCES_FAILED", exc)
+            for tool in self._agenda_tools:
+                tool.refresh_schema()
             publish_agenda_schema(self.config_raw, self.settings.schema)
         self._config_errors = self.settings.blocking_errors()
         self._valid = links_ready and not self._scope_error and not self.settings.shape_errors
@@ -344,12 +402,12 @@ class ActiveMessagePlugin(Star):
             payload = await self.state_file.load()
             self.runtime.restore(payload, self.plugin_config.max_recent_messages)
             if payload.get("proactive_schedule_version") != PROACTIVE_SCHEDULE_VERSION:
-                # 排期算法不同则重新安排机会；聊天计数和其他运行状态保持不变。
+                # Replace only unstarted slots when the sampling algorithm
+                # changes. Retain all attempted outcomes and their quota cost.
                 for state in self.runtime.sessions.values():
                     state.proactive_next_run = None
-                    state.proactive_schedule_date = ""
                     state.proactive_schedule_key = ""
-                    state.proactive_schedule.clear()
+                    state.proactive_schedule = [row for row in state.proactive_schedule if row["status"] != "pending"]
         except Exception as exc:
             self._valid = False
             self._state_valid = False
@@ -621,9 +679,19 @@ class ActiveMessagePlugin(Star):
             req.func_tool = ToolSet(list(req.func_tool.tools))
             for name, manage in (("query_schedule", False), ("manage_schedule", True)):
                 tool = req.func_tool.get_tool(name)
-                if isinstance(tool, ScheduleTool):
+                if tool is not None and any(
+                    tool is registered or (tool.handler_module_path and tool.handler_module_path == registered.handler_module_path)
+                    for registered in self._agenda_tools if registered.name == name
+                ):
                     if self.agenda_allowed(sid):
-                        req.func_tool.add_tool(ScheduleTool(self, sid, manage=manage))
+                        # Preserve native permission wrappers and plugin metadata.
+                        # Only this request's description/schema are replaced.
+                        bound = copy.copy(tool)
+                        template = ScheduleTool(self, sid, manage=manage)
+                        bound.description, bound.parameters = template.description, template.parameters
+                        if isinstance(bound, ScheduleTool):
+                            bound.sid, bound.locale = sid, template.locale
+                        req.func_tool.add_tool(bound)
                     else:
                         req.func_tool.remove_tool(name)
         meta = event.get_extra(META_KEY, {})
@@ -1010,7 +1078,8 @@ class ActiveMessagePlugin(Star):
                        if state.proactive_schedule_date == today else [])
             used = max(len(history), state.daily_proactive_sent if state.last_bot_date == today else 0)
             points = choose_proactive_schedule(now=now, timezone_name=cfg.timezone,
-                sleep_hours=cfg.sleep_hours, active_hours=cfg.active_hours, attempts=cfg.proactive_daily_limit)
+                sleep_hours=cfg.sleep_hours, active_hours=cfg.active_hours, attempts=cfg.proactive_daily_limit,
+                cooldown_seconds=cfg.cooldown_seconds)
             points = points[:max(0, cfg.proactive_daily_limit - used)]
             state.proactive_schedule = history + [{"at": point.isoformat(), "status": "pending"} for point in points]
             state.proactive_schedule_date, state.proactive_schedule_key = today, key
@@ -1019,7 +1088,8 @@ class ActiveMessagePlugin(Star):
 
     def _schedule_key(self, sid: str, now: datetime) -> str:
         cfg = self._config_for(sid)
-        return json.dumps([str(now.tzinfo), cfg.sleep_hours, cfg.active_hours, cfg.proactive_daily_limit], ensure_ascii=False)
+        return json.dumps([str(now.tzinfo), cfg.sleep_hours, cfg.active_hours, cfg.proactive_daily_limit,
+                           cfg.cooldown_seconds], ensure_ascii=False)
 
     def proactive_reallocation(self, sid: str) -> dict[str, Any]:
         """Read-only eligibility and a snapshot token; elapsed slots change the token too."""
@@ -1045,7 +1115,7 @@ class ActiveMessagePlugin(Star):
         elif state.agent_active or sid in self._proactive_tasks or any(row["status"] == "running" for row in rows):
             reason = "此会话正在处理任务，请结束后再重新分配。"
         elif not future:
-            reason = "今天没有未来且尚未尝试的预约。"
+            reason = "今天已经没有待执行的主动聊天机会。"
         else:
             used = max(len(rows) - len(future), state.daily_proactive_sent if state.last_bot_date == today else 0)
             if len(future) > max(0, cfg.proactive_daily_limit - used):
@@ -1080,7 +1150,8 @@ class ActiveMessagePlugin(Star):
             if count != snapshot["count"] or now.date().isoformat() != snapshot["date"]:
                 raise ValueError("预约时间已到或已经跨天，请刷新后重新确认。")
             points = choose_proactive_schedule(now=now, timezone_name=cfg.timezone,
-                sleep_hours=cfg.sleep_hours, active_hours=cfg.active_hours, attempts=count, remaining_only=True)
+                sleep_hours=cfg.sleep_hours, active_hours=cfg.active_hours, attempts=count,
+                cooldown_seconds=cfg.cooldown_seconds, remaining_only=True)
             if len(points) != count:
                 raise ValueError("今天没有足够的剩余活跃时间，原预约保持不变。")
             rows = sorted(retained + [{"at": point.isoformat(), "status": "pending"} for point in points],
@@ -1243,6 +1314,8 @@ class ActiveMessagePlugin(Star):
             candidate.scopes.inherit_observations(self.scopes)
             self.settings = candidate
             publish_agenda_schema(self.config_raw, candidate.schema)
+            for tool in self._agenda_tools:
+                tool.refresh_schema()
             self.plugin_config = candidate.config
             self.scopes = candidate.scopes
             self._scope_error = bool(candidate.scope_error)
@@ -1287,7 +1360,7 @@ class ActiveMessagePlugin(Star):
         yield event.plain_result(
             f"主动会话 v{PLUGIN_VERSION}\n总开关：{'开启' if cfg.enabled else '关闭'}；配置有效：{self._valid}\n"
             f"SID：{sid}\n范围：{'生效' if matched else '不生效'}；会话组：{group.name if group else '全局'}\n"
-            f"插话配置：{'有效' if self._feature_valid(sid, 'interjection') else '无效，已暂停插话'}；主动聊天配置：{'有效' if self._feature_valid(sid, 'proactive') else '无效，已暂停主动聊天'}\n"
+            f"智能插话配置：{'有效' if self._feature_valid(sid, 'interjection') else '无效，已暂停智能插话'}；主动聊天配置：{'有效' if self._feature_valid(sid, 'proactive') else '无效，已暂停主动聊天'}\n"
             f"配置问题：{self._config_errors}\n"
             f"权重：{cfg.weights()}\n"
             f"下次主动尝试：{state.proactive_next_run if state else '尚未安排'}\n"

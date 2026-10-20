@@ -1,8 +1,8 @@
 {
   "metadata": {
     "display_name": "主动会话插件",
-    "short_desc": "智能插话与主动聊天，让机器人更懂什么时候该说话。",
-    "desc": "支持智能插话、主动聊天和日程管理。"
+    "short_desc": "支持智能插话、主动聊天、日程管理。",
+    "desc": "AstrBot主动会话插件，支持智能插话、主动聊天、日程管理，让机器人更智能、更拟真。"
   },
   "config": {
     "enabled": {
@@ -16,7 +16,7 @@
         "hint": "全局智能插话默认值。会话组可选择跟随、开启或关闭，但所有会话都必须先打开最上方“启用主动会话插件”。"
       },
       "threshold": {
-        "description": "插话分数门槛（阈值）",
+        "description": "智能插话分数门槛（阈值）",
         "hint": "取值 0～1。最终分必须高于这个值才会插话；等于也不触发。越低越容易插话。0.7 是分数门槛，不是 70% 的概率；精力分为 0 也不一定阻止插话。"
       },
       "debounce_seconds": {
@@ -157,7 +157,7 @@
       },
       "daily_limit": {
         "description": "每个会话每日主动尝试额度（轮）",
-        "hint": "填写 1～1000 的整数。每天按有效活跃总时长分配这些聊天机会，每份随机选一个时间。已发送或正常完成但未发送算一轮；失败、错过或受限制的机会直接过去，次日重新安排。一天可能发不满，也可能选择不发。"
+        "hint": "填写 1～1000 的整数。每天把允许主动聊天的时段拼在一起，随机选出这么多个时间；相邻机会至少隔开共享冷却时间，且不少于一分钟。时间不够时只安排放得下的次数。发送成功或正常完成但决定不发，都会用掉一轮。失败、错过或被跳过的机会不补发，次日重新安排。"
       },
       "prompts": {
         "description": "主动聊天提示词列表",
@@ -194,7 +194,7 @@
     },
     "runtime": {
       "description": "运行资源与超时",
-      "hint": "设置所有会话合计的并发额度，以及唯一一项可选的主动聊天额外总时限。总时限默认留空，模型和工具沿用主框架自身的限制；不影响智能插话的判断请求超时。",
+      "hint": "设置所有聊天合计最多同时处理多少项任务，以及一次主动聊天最多运行多久；智能插话的判断超时单独设置。",
       "judgment_concurrency": {
         "description": "同时进行的判断任务上限",
         "hint": "所有会话合计最多同时进行多少个判断请求。填写正整数；不是每个群每分钟可插话多少次。调大可能增加模型服务压力。"
@@ -204,8 +204,8 @@
         "hint": "所有会话合计最多同时执行多少轮主动聊天。达到上限时其他任务需要等待；不改变每个会话的每日轮次上限。"
       },
       "proactive_timeout_seconds": {
-        "description": "主动聊天额外总时限（秒，留空跟随框架）",
-        "hint": "默认留空：插件不设置整轮截止时间，模型、重试、备用模型和工具使用主框架自身的处理方式；框架没有统一的整轮时限，等待较久仍会显示进行中。填写正整数后，额外限制从取得主动执行名额起到保存历史完成的总时间，包含会话锁、上下文、模型与工具和发送，不含等待主动执行名额的排队时间。已发送内容不能撤回。"
+        "description": "一次主动聊天最多运行多久（秒，留空不额外限制）",
+        "hint": "留空时，插件不额外限时，模型和工具仍遵守 AstrBot 的限制。填写正整数后，限制一次主动聊天从开始处理到保存聊天记录的总时间，包括准备、模型回复、工具操作和发送；等待空闲名额的时间不计入。超时前已经发出的消息会保留。"
       }
     },
     "diagnostics": {
@@ -253,7 +253,7 @@
             ]
           },
           "threshold_override": {
-            "description": "插话分数门槛（阈值）",
+            "description": "智能插话分数门槛（阈值）",
             "hint": "留空跟随全局；填写后只用于本组。取值 0～1。最终分必须高于这个值才会插话；等于也不触发。越低越容易插话。0.7 是分数门槛，不是 70% 的概率；精力分为 0 也不一定阻止插话。"
           },
           "decision_mode": {
@@ -329,7 +329,7 @@
             "description": "本组主动聊天详细设置",
             "daily_limit": {
               "description": "每个会话每日主动尝试额度（轮）",
-              "hint": "留空跟随全局；填写后只用于本组。填写 1～1000 的整数。每天按有效活跃总时长分配这些聊天机会，每份随机选一个时间。已发送或正常完成但未发送算一轮；失败、错过或受限制的机会直接过去，次日重新安排。一天可能发不满，也可能选择不发。"
+              "hint": "留空跟随全局；填写后只用于本组。填写 1～1000 的整数。每天把允许主动聊天的时段拼在一起，随机选出这么多个时间；相邻机会至少隔开共享冷却时间，且不少于一分钟。时间不够时只安排放得下的次数。发送成功或正常完成但决定不发，都会用掉一轮。失败、错过或被跳过的机会不补发，次日重新安排。"
             },
             "prompts": {
               "description": "主动聊天提示词列表",
@@ -398,11 +398,11 @@
           },
           "agenda_preview_days": {
             "description": "本组日程预览天数",
-            "hint": "默认填写“inherit（跟随全局）”；可直接填数字覆盖全局；清空表示本组不限制。填写 0 完全关闭本组自动注入，工具和暂停规则仍可用。"
+            "hint": "填写“inherit”表示跟随全局；填写数字后，本组使用这个天数。清空表示本组不限天数；填 0 后不再自动提供日程背景，日程工具和暂停功能仍可用。"
           },
           "agenda_max_items": {
-            "description": "本组日程注入条数上限",
-            "hint": "默认填写“inherit（跟随全局）”；可直接填数字覆盖全局；清空表示本组不限制。填写正整数限制当前、未来安排各自的条数。"
+            "description": "本组每次提供给机器人的日程数量上限",
+            "hint": "填写“inherit”表示跟随全局；填写正整数后，本组使用这个数量。清空表示本组不限数量；正在进行和未来安排分别计算。"
           },
           "routine_overrides": {
             "description": "本组作息设置",
@@ -437,7 +437,11 @@
       },
       "outside_scope": {
         "description": "向插件生效范围外会话提供全局日程",
-        "hint": "开启后，范围外会话可获得共享全局日程及指定给它的日程，并可查询、管理自己的单会话日程；不会开启智能插话或主动聊天。也允许在 Pages 全局日程编辑窗口填写指定 SID 列表。"
+        "hint": "开启后，名单外的群聊或私聊也能知道全局日程，以及单独指定给它的日程，并可查询、管理自己的日程。不会因此开启智能插话或主动聊天。也允许在全局日程编辑窗口填写指定会话的 SID。"
+      },
+      "allow_global_management": {
+        "description": "允许Agent管理全局日程",
+        "hint": "开启后，机器人可查询、新建、修改和删除各聊天共用的全局日程，也可管理当前聊天自己的日程；默认选择当前聊天。即使某条全局日程在本组不使用，也能查到并管理。会话组日程和多个聊天共用的专属日程仍不能由机器人修改。工具使用权限请在 AstrBot WebUI 的 插件-管理行为-函数工具 中设置。"
       },
       "background_description": {
         "description": "日程背景说明",
@@ -445,11 +449,11 @@
       },
       "preview_days": {
         "description": "日程预览天数",
-        "hint": "默认 7 天；留空不限制未来范围；0 完全关闭日程说明和 JSON 自动注入，Agent 仍可使用日程工具。重复日程仅提供下一次。"
+        "hint": "默认提供未来 7 天的安排；留空表示不限天数。填 0 后，不再自动把日程告诉机器人，但日程查询、管理和暂停功能仍可用。重复日程只提供下一次安排。"
       },
       "max_items": {
-        "description": "日程注入条数上限",
-        "hint": "留空不限制；填写正整数后，分别限制当前安排与未来安排的条数。工具查询不受此限制。"
+        "description": "每次提供给机器人的日程数量上限",
+        "hint": "留空表示不限数量。填写正整数后，分别限制正在进行和未来安排的数量；例如填 5，最多提供 5 条当前安排和 5 条未来安排。机器人用工具查询时不受此限制。"
       },
       "events": {
         "description": "日程",
@@ -584,7 +588,7 @@
         "sd21145d4fa": "重复方式",
         "s21e56b7a00": "行为影响",
         "s3c21665db7": "仅提供背景",
-        "s32d50131e1": "只暂停插话",
+        "s32d50131e1": "只暂停智能插话",
         "sbbb1fe3fdb": "只暂停主动聊天",
         "s9c646fbe82": "两者都暂停",
         "s910a4bc801": "本组继承",
@@ -615,7 +619,7 @@
         "s8bb38ef00c": "未启用",
         "s0b6ffdd500": "下一次：",
         "s94792627f5": " 全天",
-        "s25eaa711df": "暂停插话",
+        "s25eaa711df": "暂停智能插话",
         "s016ccdd7f6": "暂停主动聊天",
         "s7b29ae8ef6": "恢复继承",
         "sc1fa72cee6": "重新关联",
@@ -779,9 +783,9 @@
         "sd20f4b9d0a": "请先选择一个已有预约的会话。",
         "s2609b6adc1": "正在读取预约信息；若持续不可用，请重载插件并刷新页面。",
         "s84ef3cdcba": "所选会话时区与时间轴不同，请先在作息设置中统一时区。",
-        "s05b8962d33": "今天没有未来且尚未尝试的预约。",
+        "s05b8962d33": "今天已经没有待执行的主动聊天机会。",
         "sb6e8f870fd": "预约时间已到，正在等待状态刷新。",
-        "sfcfdc4db71": "重新分配主动聊天？",
+        "sfcfdc4db71": "重新抽卡主动聊天？",
         "s5e552e7d27": "会话：",
         "s4b05f0e460": "\n日期：",
         "s2bd06952be": "）\n\n将把今天未来、尚未开始的 ",
@@ -808,7 +812,7 @@
         "sf128aab730": "预约点",
         "sb9cb982e0f": "时区：",
         "s1f3bc94376": "跟随框架",
-        "s873bf2d9e6": "重新分配主动聊天",
+        "s873bf2d9e6": "重新抽卡主动聊天",
         "sb10a594207": "本范围还没有可展示的会话，请先保存会话组或等待该会话收到消息。",
         "sda449ee56f": "本会话主动聊天尚未启用或暂不可用。",
         "sb625a1d378": "今天没有待展示的预约。请检查活跃时段；当天较晚启动时可能没有剩余机会。",
@@ -843,13 +847,13 @@
         "s458881e74e": "睡眠时段不主动聊天，也不智能插话；正常 @ 回复照常。本组留空跟随全局，填“无”表示不设置。",
         "sf6421bc63c": "只有活跃时段可以主动找人聊；本组留空跟随全局，填“无”表示不主动聊天。",
         "se0534d9316": "只限制判断参考资料，不删改聊天历史；0 表示先选全部。",
-        "sfaed2cb69f": "留空跟随主框架；填写正整数才增加插件整轮时限，不改变模型和工具自身的限制。",
+        "sfaed2cb69f": "留空不增加时间限制；填写秒数后，一次主动聊天最多运行这么久。",
         "scc15532005": "跟随全局、只开启或只关闭本组日程功能；关闭不会删除日程。",
-        "sdd78be7885": "默认 7；留空不限；0 关闭自动日程背景，仍可使用工具。",
-        "s274042be07": "留空不限制；正整数分别限制当前与未来安排条数。",
-        "s7c552e3b5d": "默认填入“跟随全局”；填写数字覆盖全局；留空表示本组不限；填 0 关闭自动日程背景，仍可使用日程工具。",
-        "sae4b438099": "默认填入“跟随全局”；填写正整数覆盖全局；留空表示本组不限。",
-        "s7431ecb074": "允许范围外会话知晓全局日程、查询并管理自己的日程。",
+        "sdd78be7885": "默认提供未来 7 天的安排；留空表示不限天数。填 0 后，不再自动把日程告诉机器人，但日程查询、管理和暂停功能仍可用。重复日程只提供下一次安排。",
+        "s274042be07": "留空表示不限数量。填写正整数后，分别限制正在进行和未来安排的数量；例如填 5，最多提供 5 条当前安排和 5 条未来安排。机器人用工具查询时不受此限制。",
+        "s7c552e3b5d": "默认跟随全局；填写数字后，本组使用这个天数。留空不限；填 0 不再自动提供日程背景，工具仍可用。",
+        "sae4b438099": "默认跟随全局；填写正整数后，本组使用这个数量；留空表示本组不限。",
+        "s7431ecb074": "名单外的聊天也能知道日程，并管理自己的安排；不会开启智能插话或主动聊天。",
         "s5a2c54f96a": "所有会话共用；留空恢复默认，日程 JSON 自动附加。",
         "sfe0b615664": "不重复、每天、每周、每年或 Cron；不熟悉 Cron 时建议选每天或每周。",
         "sf8820c0c57": "全天整天有效；时段按起止时间有效，结束早于开始表示跨午夜。",
@@ -897,7 +901,7 @@
         "s497039e3c3": "判断与加权",
         "s627ae535b3": "超过阈值才开口",
         "s4e7e00255a": "插件总开关",
-        "s93fc891811": "关闭时停用插话、主动聊天和日程。",
+        "s93fc891811": "关闭时停用智能插话、主动聊天和日程。",
         "sdf328733ac": "第一次使用？",
         "sec366f483b": "用一分钟认识范围、开关和决策回放。教程不会改配置，也不会发送消息。",
         "s5ead3f184a": "开始新手引导",
@@ -908,10 +912,10 @@
         "sfb7bf39991": "会话 / 分组",
         "s6ccdfcc780": "智能插话 / 主动聊天",
         "s198faa5f7c": "还需等待",
-        "sc75c756a0b": "今日主动尝试（轮）",
+        "sc75c756a0b": "今日主动聊天尝试（轮）",
         "s1b917b7d22": "下次尝试时间",
         "s40852947a8": "最近结果（按功能）",
-        "s90de0b5d63": "插话",
+        "s90de0b5d63": "智能插话",
         "s4265af54b8": "暂无结果",
         "sf7acefd2d4": "查看",
         "sb4217093bc": "开",
@@ -943,7 +947,7 @@
         "s3eec3e8a28": "评分与等待",
         "s7f8305a520": "权重决定各项的重要程度；最终分严格高于阈值，且不在冷却或暂停期间，才会尝试接话。",
         "s794c08e40b": "模型服务、接口、密钥、超时和重试在“全局设置”中配置；本组可选择判断模式并覆盖提示词。",
-        "sbdcfcf89c0": "插话时怎样说",
+        "sbdcfcf89c0": "智能插话时怎样说",
         "s1d17a5dcc2": "填写希望机器人接话时遵守的要求；多套提示词会随机选一套。",
         "s82ced76822": "作息管理",
         "s53a2651bb8": "睡眠时安静，正常时只参与已有话题，活跃时也可以主动找人聊。正常 @ 回复与原生未来任务照常；睡眠与活跃重叠时优先睡眠。",
@@ -954,7 +958,7 @@
         "s9e3a29f2f6": "运行记录与排查",
         "sab339e4743": "执行阶段和文字快照始终临时采集，可查看请求、响应、工具结果与发送情况。快照可能包含聊天正文，已知密钥和媒体编码会隐藏，过长文字会标明缩减。",
         "s2228cf92fd": "运行资源与超时",
-        "s1cc75682a4": "设置所有会话合计的并发额度。主动聊天额外总时限默认留空，模型和工具沿用主框架自身的限制；填写正整数才增加插件整轮时限，不影响智能插话的判断请求超时。",
+        "s1cc75682a4": "设置所有聊天合计最多同时进行多少项判断和主动聊天。主动聊天的时间限制可以留空；填写后，只限制一次主动聊天的总时间，不改变模型和工具自身的超时设置。",
         "s9c36d20a0b": "用一组分数试试看",
         "s1c6bbd765f": "调整示例分数和模拟权重，看看是否超过当前阈值。只在本页试算，不修改配置、不调用模型，也不发送消息。",
         "sc80dceb4f8": "同步当前配置权重",
@@ -1019,8 +1023,8 @@
         "s6261e0cb27": " · 本阶段 ",
         "s88568e1855": " 秒 · 执行 ",
         "s302e66cfea": " 秒 · ",
-        "s4a6f2fe68b": "跟随主框架，无插件整轮截止时间",
-        "s5420d3887f": "插件整轮上限 ",
+        "s4a6f2fe68b": "未设置主动聊天总时限",
+        "s5420d3887f": "一次主动聊天最多运行 ",
         "s702d41b438": "模型调用 ",
         "sc1ba9be609": " 次 · 工具调用 ",
         "see9a69e60d": " 次 · ",
@@ -1035,7 +1039,7 @@
         "s6645035702": "放弃并载入",
         "sc139715f77": "已连接 · 配置与运行状态分开显示",
         "s45cf57e999": "配置已载入，运行状态暂时不可用：",
-        "s4cdfc111e2": "保存页面中的配置修改；日程操作已单独保存。若删除了会话组，也会删除该组专属日程和排除记录。保存配置会取消等待中的判断，并清空此前采集的步骤；当天已结束的机会和已用额度会保留。只有作息、时区或每日额度变化时，才重新抽取后续预约。",
+        "s4cdfc111e2": "保存页面中的配置修改；日程操作已单独保存。若删除了会话组，也会删除该组专属日程和排除记录。保存配置会取消等待中的判断，并清空此前采集的步骤；当天已结束的机会和已用额度会保留。作息、时区、每日额度或共享冷却时间变化时，会重新安排尚未开始的聊天机会。",
         "s5d2dde0a21": " Jev 接口地址发生变化；请求会向该地址发送凭据与判断材料，请确认可信。",
         "s6ca27c6855": "保存并生效？",
         "s68011d1e60": "配置已保存并生效。当天已结束的机会和已用额度保留，可在作息时间轴查看预约。",
@@ -1043,7 +1047,7 @@
         "s996b21b3ae": "先分清两种功能",
         "s3e571af057": "智能插话：接上群里正在聊的话题。主动聊天：在合适时间主动找人聊。回复仍由原会话的聊天助手生成；正常 @ 和命令照常。教程不改配置，也不发送消息。",
         "s62b5416c41": "先用一个测试会话",
-        "s87c15e43af": "先与机器人正常聊一次，再由管理员发送 /active_status 复制完整 SID（会话地址），填入测试组。添加组后只在组内会话生效；不添加任何组则对所有支持的已知会话生效。",
+        "s87c15e43af": "先与机器人正常聊一次，再由管理员发送 /active_status 复制完整 SID（会话地址），填入测试组。添加任何组后，智能插话和主动聊天只在组内运行；不添加组时共用全局设置。插件不会自动扫描机器人加入的全部群；开启插件和主动聊天后，先在目标会话发一次消息，让插件记录它，再分别安排聊天机会。",
         "sad0aa8e5c7": "先把判断模型配好",
         "s1bced343f4": "使用智能插话前，关闭 AstrBot 自带的“主动回复”。在全局设置中选择已配置的 LLM，或填写兼容 Jev 的服务和密钥。判断模型只打分，原会话的聊天模型负责回复；仅用主动聊天不需要配置判断模型。",
         "sa0d738333b": "聊天记录自动选择备用来源",
@@ -1055,7 +1059,7 @@
         "sdc12b27263": "决定机器人怎样接话",
         "s706270f9d9": "判断提示词指导打分，发言提示词指导如何接话。多套发言提示词随机选用，本组留空跟随全局。点输入框可打开占位符助手，点选插入、Esc 收起；修改后需要保存。",
         "s170d090f28": "作息决定什么时候可以开口",
-        "s7ae7badbed": "睡眠暂停插话和主动聊天；正常时可插话，活跃时也可主动聊天。竖线是所选会话已预约的机会，点击查看时间和结果；每天随机安排，不能保证每次都发。作息不限制正常 @ 回复，也不拦截原生未来任务。",
+        "s7ae7badbed": "睡眠时暂停智能插话和主动聊天；正常时允许智能插话，活跃时也允许主动聊天。竖线是所选会话已预约的机会，点击查看时间和结果；每天随机安排，不能保证每次都发。作息不限制正常 @ 回复，也不拦截原生未来任务。",
         "s3948b31514": "先试一条日程",
         "s2aea5a7d1d": "日程让机器人知道安排，也可按需暂停插话或主动聊天。点击弹窗“保存日程”立即生效；删除、排除也直接保存，不用再点顶部保存。日程不等于准时提醒；提醒请用框架未来任务。",
         "s318ddcd2a7": "进阶：日程与连续自拍",
@@ -1092,7 +1096,8 @@
         "s1f60132232": "筛选开始日期",
         "s51d89b73e2": "筛选结束日期",
         "s281dbd5f95": "日期需要在 1900～2199 年之间。",
-        "s229f1f76a2": "结束日期不能早于开始日期。"
+        "s229f1f76a2": "结束日期不能早于开始日期。",
+        "s911de6acea": "开启后，机器人可以自己选择修改当前聊天的日程，或各聊天共用的全局日程。"
       },
       "runtime": {
         "s274d480aa7": "近期群消息可能与原生分支或主框架群上下文重叠；它们均为参考资料。",
@@ -1100,7 +1105,7 @@
         "sc89b1423ed": "当前处于正常时段，只允许智能插话。",
         "s98fcd3ca25": "收到消息",
         "sbf4043aef2": "收到的消息摘要",
-        "sa8128f8e02": "已接收，未进入插话判断",
+        "sa8128f8e02": "已接收，未进入智能插话判断",
         "s5453160ded": "智能插话",
         "se2e17c84f1": "合并消息，等待群聊停顿",
         "sab5e26eb21": "插件请求钩子快照（非最终网络报文）",
@@ -1119,8 +1124,8 @@
         "s5b8c22ff9c": "日程暂停：",
         "sb5f12971e4": "正常唤醒或命令已交给框架",
         "s9ebe3b7d86": "前置检查",
-        "sa6c2d7e70b": "插话已关闭或配置无效",
-        "sd34f1626a1": "原版主动回复未关闭，本插件让出插话",
+        "sa6c2d7e70b": "智能插话已关闭或配置无效",
+        "sd34f1626a1": "原版主动回复未关闭，本插件让出智能插话",
         "s8e4f49e74f": "主框架未允许该会话使用插件或 LLM",
         "sf3db37bba9": "已记入上下文；已有判断进行中",
         "s1785d2ae86": "已交给原生 Agent",
@@ -1135,14 +1140,14 @@
         "s6c79837cb7": "上一轮工具未响应取消；插件已暂停，请先处理工具或重启 AstrBot，避免重复执行。",
         "s1bd040b3df": "有会话正在运行 Agent，请等待结束后再保存。",
         "s59350eb50e": "当前框架没有可用的原生配置保存接口；请在插件配置页保存并重载。",
-        "sd43190f9ff": "主动会话 v{v0}\n总开关：{v1}；配置有效：{v2}\nSID：{v3}\n范围：{v4}；会话组：{v5}\n插话配置：{v6}；主动聊天配置：{v7}\n配置问题：{v8}\n权重：{v9}\n下次主动尝试：{v10}\n最近日志原因：{v11}",
+        "sd43190f9ff": "主动会话 v{v0}\n总开关：{v1}；配置有效：{v2}\nSID：{v3}\n范围：{v4}；会话组：{v5}\n智能插话配置：{v6}；主动聊天配置：{v7}\n配置问题：{v8}\n权重：{v9}\n下次主动尝试：{v10}\n最近日志原因：{v11}",
         "s69ec9a1b68": "本会话日程功能已关闭，未创建。",
         "s9e2646ef23": "指定会话",
         "se2209c8409": "已取消或未满足触发条件",
         "s445cd189a4": "缺少原生对话分支",
         "s8566da0333": "模型权重为零，未调用",
         "sad196bf819": "旧判断已作废",
-        "s2cd1f6466c": "未超过插话阈值",
+        "s2cd1f6466c": "未超过智能插话阈值",
         "seec46c136f": "不适用",
         "s4e1588b304": "定时主动聊天",
         "sb5eca00e4a": "\n\n[主动会话临时激活提示]\n",
@@ -1183,20 +1188,20 @@
         "sf3cecdf4cd": "取得判断额度",
         "s4225b8b634": "判断未成功：",
         "s5e44489566": "本会话上一轮主动任务仍在进行。",
-        "s05b8962d33": "今天没有未来且尚未尝试的预约。",
+        "s05b8962d33": "今天已经没有待执行的主动聊天机会。",
         "s256783b7d4": "开启",
         "s6c14bd7f6f": "关闭",
         "sb63f91b9f2": "生效",
         "s097083a87e": "不生效",
         "sa5644f4bbf": "全局",
         "sad385d382a": "有效",
-        "sbe3ecc0247": "无效，已暂停插话",
+        "sbe3ecc0247": "无效，已暂停智能插话",
         "s136ea194c1": "无效，已暂停主动聊天",
         "sb60bae39f7": "尚未安排",
         "s5dbd015496": "暂无",
         "s084162d78f": " 次模型调用",
-        "sfd16edc5e4": "排队后快照已过期",
-        "se2f33bb239": "排队期间进入暂停插话日程",
+        "sfd16edc5e4": "等待时间太久，判断依据已过时，已跳过本次智能插话。",
+        "se2f33bb239": "排队期间进入暂停智能插话日程",
         "s60cdd3398b": "剩余预约与今日额度不一致，请刷新并检查运行状态。",
         "s491d647239": "保存中断；请重载恢复。",
         "sf495347d6a": "第 ",
@@ -1206,8 +1211,8 @@
         "s3172b317f9": "任务",
         "s5caf279339": "异常",
         "s0a2c91cec6": "结果",
-        "s73f8664353": "插话评分与结论",
-        "s8a9dc5eca5": "判断通过，准备插话",
+        "s73f8664353": "智能插话评分与结论",
+        "s8a9dc5eca5": "判断通过，准备智能插话",
         "s05539ba4b1": "开始主动聊天",
         "s1c38adb5a4": "本轮结果：",
         "s20391328c8": "已结束",
@@ -2317,8 +2322,8 @@
     }
   },
   "tools": {
-    "query_description": "Read schedules visible in the CURRENT conversation; this tool never changes data. Use range (default) for current/future occurrences, or supply dates to read the past. Each rule appears once: the FIRST occurrence overlapping the requested range, with its repeat rule. status describes that occurrence, not whether the whole recurring rule has ended. Use catalog to list all visible rules, including disabled ones, before editing. To edit/delete, copy id and revision from this result into manage_schedule. Only editable=true rules can be changed. Shared global/group rules are read-only. Schedules are background context, NOT timed reminders.",
-    "manage_description": "Manage schedules belonging ONLY to the CURRENT conversation. Never accepts a target SID. create: pass action=create and a nonempty events array; omit id/revision/changes. update: query_schedule first, then pass action=update, exact id, revision, and changes containing ONLY fields to change. delete: query first, then pass action=delete, exact id and revision; omit events/changes. Only editable=true records can be updated/deleted. Global/group/multi-session rules are read-only. Updating/deleting a repeating rule affects the ENTIRE series, not one occurrence. Dates use the current conversation timezone. No reminders are created. Omit unused optional fields; do not use null. Report success ONLY when saved=true. Examples: {\"action\":\"create\",\"events\":[{\"title\":\"Reading\",\"start_date\":\"2026-10-20\"}]}; {\"action\":\"update\",\"id\":\"<from query>\",\"revision\":\"<from query>\",\"changes\":{\"title\":\"New title\"}}; {\"action\":\"delete\",\"id\":\"<from query>\",\"revision\":\"<from query>\"}.",
+    "query_description": "查询当前聊天可见日程；全局和会话组日程只读。\n只读查询日程背景，不创建定时提醒。\n查某天：start_date、end_date 填同一天的真实 YYYY-MM-DD 日期；省略日期从现在开始。\n修改/删除前可用 mode=catalog 查全部规则（含停用），只操作 editable=true；原样复制该条 id、revision。\n按日期查询时，每条重复规则只返回范围内第一次安排；status 是这一次的状态。",
+    "manage_description": "仅管理当前聊天独享的日程，不接受 scope 或目标 SID；需要全局操作时结束任务，等待授权。\n管理日程背景，不创建定时提醒。\n新建：action=create + events；每项至少 title、start_date，默认全天且不重复。多条日程放进同一个 events 数组。\n时段：time_mode=时段，并填 start_time、end_time（HH:MM）。\n修改/删除：先 query_schedule，只操作 editable=true，原样复制 id、revision；action=update 还需 changes，action=delete 不传 changes。重复日程作用于整条规则。\n只传所选操作需要的参数，不填 null；选项值原样填写。saved=true 才算保存成功。要求避免重复时先查目标日期。\n结构示例，尖括号须替换为真实内容：\n{\"action\":\"create\",\"events\":[{\"title\":\"<日程1名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"},{\"title\":\"<日程2名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"}]}",
     "query_parameters": {
       "type": "object",
       "additionalProperties": false,
@@ -2329,15 +2334,15 @@
             "range",
             "catalog"
           ],
-          "description": "range (default): first occurrence per rule in the date range. catalog: all visible rules, including disabled; dates are ignored."
+          "description": "range（默认）：按日期查安排，每条规则返回第一次安排。catalog：查看全部规则，包括停用的，忽略日期；适合修改或删除前找 id、revision。"
         },
         "start_date": {
           "type": "string",
-          "description": "可选 YYYY-MM-DD，可填写过去日期；省略从现在开始，仅给过去的结束日期时查询截至该日的安排。"
+          "description": "可选，真实开始日期 YYYY-MM-DD；不填从现在开始。查某天时与 end_date 填同一天。"
         },
         "end_date": {
           "type": "string",
-          "description": "可选 YYYY-MM-DD，包含当天，可填写过去日期；省略不限制结束日期。每条日程只返回范围内一次安排。"
+          "description": "可选，真实结束日期 YYYY-MM-DD，包含当天；不填则不限结束日期。查某天时与 start_date 填同一天。"
         },
         "keyword": {
           "type": "string",
@@ -2346,21 +2351,99 @@
       }
     },
     "create_fields": {
-      "events": "必填，非空日程对象数组，如 [{\"title\":\"阅读\",\"start_date\":\"2026-10-12\"}]；每项按下列字段填写，整批检查通过才保存。",
-      "title": "必填，非空日程名称，最多 80 字。",
-      "description": "可选，日程说明，最多 1000 字；省略则无说明。",
-      "start_date": "必填，开始日期 YYYY-MM-DD，年份 1900～2199；重复安排从当天起生效。",
-      "until": "可选，重复日程的最后生效日期 YYYY-MM-DD（包含当天）；空字符串表示取消截止日期。",
-      "enabled": "可选；省略为 true，填 false 创建停用日程。",
-      "time_mode": "可选；普通日程省略为“全天”。选择“时段”必须提供起止时间；Cron 无需填写此项。",
-      "start_time": "普通“时段”必填，格式 HH:MM；全天和 Cron 省略。",
-      "end_time": "普通“时段”必填，格式 HH:MM；早于开始表示次日结束，不能与开始相同；全天和 Cron 省略。",
-      "repeat": "可选；省略为“不重复”。每天按日重复，每周按所选星期重复，每年按开始日期的月日重复，Cron 按表达式重复。",
-      "weekdays": "“每周”必填，至少一个星期字符串，如 [\"周一\",\"周五\"]；其他重复方式省略。",
-      "cron": "“Cron”必填，五段“分 时 日 月 周”，如 0 7 * * * 表示每天 07:00；其他方式省略。",
-      "cron_duration_minutes": "仅 Cron 使用，可选整数 1～1440；省略时插件使用 60 分钟。",
-      "pause_interjection": "可选；true 在日程期间暂停智能插话，省略为 false。",
-      "pause_proactive": "可选；true 在日程期间暂停主动聊天，省略为 false。"
+      "events": "仅 create：非空数组，一条也用 [ ]；多条合并调用，每项至少 title、start_date。update/delete 省略。",
+      "title": "必填名称，1～80 字。",
+      "description": "说明，最多 1000 字；默认无。",
+      "start_date": "必填真实日期 YYYY-MM-DD，1900～2199 年；不能填“今天”或占位符。参考本轮日期或查询结果 now。",
+      "until": "重复日程最后生效日期 YYYY-MM-DD，含当天；留空不限。",
+      "enabled": "默认 true；false 创建停用日程。",
+      "time_mode": "默认“全天”；填写起止时间须设为“时段”；Cron 省略。",
+      "start_time": "普通“时段”必填 HH:MM；全天/Cron 省略。",
+      "end_time": "普通“时段”必填 HH:MM；早于开始表示跨天，不能相同；全天/Cron 省略。",
+      "repeat": "默认“不重复”；每天、每周、每年分别按日、所选星期、开始日期的月日重复；Cron 按表达式。",
+      "weekdays": "仅“每周”必填，如 [\"周一\",\"周五\"]，至少一项。",
+      "cron": "仅 Cron 必填，五段“分 时 日 月 周”，如 0 7 * * *。",
+      "cron_duration_minutes": "仅 Cron：1～1440 整数分钟，默认 60。",
+      "pause_interjection": "true=期间暂停智能插话；默认 false。",
+      "pause_proactive": "true=期间暂停主动聊天；默认 false。"
+    },
+    "global_query_description": "scope=session（默认）查当前聊天可见日程；global 查全部共享全局日程，含本组已排除的，不含会话组或指定聊天专属日程。操作时复制结果自己的 scope，可能与查询范围不同。session 用当前聊天时区，global 用全局时区。\n只读查询日程背景，不创建定时提醒。\n查某天：start_date、end_date 填同一天的真实 YYYY-MM-DD 日期；省略日期从现在开始。\n修改/删除前可用 mode=catalog 查全部规则（含停用），只操作 editable=true；原样复制该条 id、revision。\n按日期查询时，每条重复规则只返回范围内第一次安排；status 是这一次的状态。",
+    "global_manage_description": "scope=session（默认，当前聊天独享）或 global（共享全局）。scope 放最外层；修改/删除复制原日程的 scope，不能改变归属。会话组和多聊天专属日程只读。\n管理日程背景，不创建定时提醒。\n新建：action=create + events；每项至少 title、start_date，默认全天且不重复。多条日程放进同一个 events 数组。\n时段：time_mode=时段，并填 start_time、end_time（HH:MM）。\n修改/删除：先 query_schedule，只操作 editable=true，原样复制 id、revision；action=update 还需 changes，action=delete 不传 changes。重复日程作用于整条规则。\n只传所选操作需要的参数，不填 null；选项值原样填写。saved=true 才算保存成功。要求避免重复时先查目标日期。\n全局新建结构示例，尖括号须替换为真实内容：\n{\"scope\":\"global\",\"action\":\"create\",\"events\":[{\"title\":\"<日程1名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"},{\"title\":\"<日程2名称>\",\"start_date\":\"<实际日期 YYYY-MM-DD>\"}]}",
+    "scope_parameter": {
+      "type": "string",
+      "enum": [
+        "session",
+        "global"
+      ],
+      "default": "session",
+      "description": "session（默认）=当前聊天；global=共享全局。放在最外层；修改/删除复制结果的 scope。"
+    },
+    "manage_fields": {
+      "action": "必填。create 新建：events；update 修改：id、revision、changes；delete 删除：id、revision。其余字段省略，不传 null。",
+      "id": "仅 update/delete：从查询结果原样复制编号，不能用名称代替。",
+      "revision": "仅 update/delete：复制同一条查询结果的版本；过期则重新查询。",
+      "changes": "仅 update：只填要改的日程字段，未填保持原样。非空；不含编号、版本或归属字段。"
+    },
+    "change_fields": {
+      "title": "新名称，1～80 字。",
+      "description": "新说明，最多 1000 字；空字符串清空。",
+      "start_date": "新开始日期 YYYY-MM-DD，1900～2199 年。",
+      "until": "重复日程最后生效日期 YYYY-MM-DD，含当天；空字符串取消截止日期。",
+      "enabled": "true=启用，false=停用。",
+      "time_mode": "“全天”或“时段”；改成时段须有起止时间。",
+      "start_time": "普通“时段”必填 HH:MM；全天/Cron 省略。",
+      "end_time": "普通“时段”必填 HH:MM；早于开始表示跨天，不能相同；全天/Cron 省略。",
+      "repeat": "不重复、每天、每周、每年或 Cron；每周须有 weekdays，Cron 须有 cron。",
+      "weekdays": "仅“每周”必填，如 [\"周一\",\"周五\"]，至少一项。",
+      "cron": "仅 Cron 必填，五段“分 时 日 月 周”，如 0 7 * * *。",
+      "cron_duration_minutes": "Cron 持续分钟数，整数 1～1440。",
+      "pause_interjection": "true=日程期间暂停智能插话，false=不暂停。",
+      "pause_proactive": "true=日程期间暂停主动聊天，false=不暂停。"
+    },
+    "types": {
+      "string": "文本字符串",
+      "boolean": "true 或 false",
+      "integer": "整数",
+      "array": "JSON 数组",
+      "object": "JSON 对象",
+      "number": "数字"
+    },
+    "messages": {
+      "arguments": "调用参数",
+      "disabled": "当前聊天未开启日程功能，或插件已关闭；本次没有保存。请结束这项日程操作，不要重复重试。",
+      "global_disabled": "未开启“允许Agent管理全局日程”，本次没有保存。请结束这项全局日程操作，等待管理员开启授权；不要反复修改参数重试，也不要擅自改成当前聊天日程。",
+      "configuration_invalid": "所选范围的日程配置有误，请管理员在控制台修正；本次不能继续查询。",
+      "conversation_mismatch": "调用工具的聊天与当前聊天不一致，本次没有保存。不能指定其他聊天来操作日程。",
+      "catalog_note": "这里列出所选范围的全部日程规则，包括已停用的。editable=true 才能修改或删除；操作时复制该条结果的 id、revision 和 scope。",
+      "occurrences": "每条日程只返回查询范围内第一次出现的安排。",
+      "status_ended": "已结束",
+      "status_ongoing": "进行中",
+      "status_upcoming": "未开始",
+      "invalid_scope": "scope 只能填写 session 或 global，不要填写中文；未开启全局授权时请省略 scope。",
+      "missing_fields": "{field} 缺少必填字段：{fields}。补齐后再调用；新建每项至少需要 title 和 start_date。",
+      "unknown_fields": "{field} 含有不支持的字段：{fields}。请删掉这些字段，不要只改成空值。",
+      "field_type": "{field} 必须是{kind}；不要用 null 代替省略。可选字段不用时直接不传。",
+      "field_enum": "{field} 只能从 {choices} 中原样选择一个，不要翻译这些取值。",
+      "field_format": "{field} 格式应为 {pattern}。请填写真实日期或时间，不要原样提交示例占位符。",
+      "field_empty": "{field} 不能为空；如果是不用的可选字段，请整个省略。",
+      "field_length": "{field} 最多允许 {maximum} 个字符，请缩短后再调用。",
+      "field_bounds": "{field} 必须在 {minimum}～{maximum} 之间，请按参数规定填写。",
+      "field_unique": "{field} 不能有重复项，请去重后再调用。",
+      "invalid_parameters": "{field} 不符合工具参数要求，请按字段说明修改后再调用。",
+      "action_fields": "action={action} 时必须且只需这些字段：{required}；已授权时还可填写 scope。缺少：{missing}；多余：{extra}。请补齐缺少字段，删除多余字段，不要填 null。",
+      "read_only_or_scope": "目标日程不存在、只读，或 scope 与它的归属不一致。本次没有保存。请重新查询，复制该条结果的 id、revision、scope；只有 editable=true 才能操作。会话组和多个聊天共用的专属日程不能由此工具修改。",
+      "revision_changed": "这条日程在查询后已被修改，本次没有保存。请重新 query_schedule，复制最新的 id、revision 和 scope 后再操作，不要继续用旧 revision 重试。",
+      "events_required": "events 必须是至少包含一条日程的 JSON 数组；一条日程也要用方括号包起来，多条放在同一数组里。",
+      "event_object": "events 中的每一项都必须是一个日程对象，用 title、start_date 等字段填写。",
+      "cron_integer": "cron_duration_minutes 必须是整数分钟，不能填写小数。",
+      "date_invalid": "start_date 必须是真实且有效的 YYYY-MM-DD 日期，年份为 1900～2199；不要填写“今天”或示例占位符。",
+      "weekdays_required": "repeat=每周 时必须填写 weekdays，至少选择一个：周一、周二、周三、周四、周五、周六、周日。",
+      "cron_required": "repeat=Cron 时必须填写 cron；普通每天、每周安排优先使用对应重复选项。",
+      "cron_invalid": "cron 无效，必须填写“分 时 日 月 周”五段表达式。",
+      "time_fields_required": "time_mode=时段 时必须同时填写 start_time 和 end_time，格式 HH:MM；缺少：{fields}。全天日程请使用 time_mode=全天 并省略起止时间。",
+      "same_time": "end_time 不能与 start_time 相同。全天日程用 time_mode=全天，并省略 start_time、end_time。",
+      "event_error": "第 {index} 条日程有误：{detail}",
+      "not_confirmed": "未能确认日程操作成功。请先查询核对，不要声称已经保存，也不要立即重复创建；必要时请管理员查看日志。"
     }
   }
 }

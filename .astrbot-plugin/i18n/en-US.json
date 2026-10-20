@@ -157,7 +157,7 @@
       },
       "daily_limit": {
         "description": "Daily proactive attempt quota per session",
-        "hint": "Integer 1–1000. Opportunities are distributed across active time with a random time in each part. A sent or normally completed silent run counts once. Failed, missed or restricted opportunities are not replaced. A new plan is prepared next day. Some or all attempts may choose silence."
+        "hint": "Enter 1–1000. All allowed active periods are joined, then this many times are chosen at random. Opportunities are separated by at least the shared cooldown or one minute, whichever is longer. Fewer are scheduled if time is too short. Sending or finishing normally without sending uses one attempt. Failed, missed or skipped opportunities are not replaced; tomorrow gets a new plan."
       },
       "prompts": {
         "description": "Proactive prompt variants",
@@ -194,7 +194,7 @@
     },
     "runtime": {
       "description": "Resources and timeouts",
-      "hint": "Shared concurrency limits and an optional extra proactive whole-run timeout. Blank uses AstrBot's model/tool limits. Judgment request timeout is separate.",
+      "hint": "Set how many tasks can run at once across all chats and a time limit for each proactive chat. Judgment timeouts are separate.",
       "judgment_concurrency": {
         "description": "Concurrent judgment requests",
         "hint": "Maximum judgment requests across all sessions. Positive integer; not a per-group interjection rate. Larger values may increase provider load."
@@ -204,8 +204,8 @@
         "hint": "Maximum proactive runs across all sessions. Other runs queue at capacity. Daily quota per session is unchanged."
       },
       "proactive_timeout_seconds": {
-        "description": "Extra proactive whole-run timeout (seconds; blank uses AstrBot)",
-        "hint": "Blank adds no plugin whole-run deadline; model retries, fallbacks and tools use AstrBot limits, which are not one unified timeout. A positive integer limits execution from acquiring a proactive slot through history save, including session lock, context, models, tools and sending; slot-queue time is excluded. Already sent content cannot be retracted."
+        "description": "Time limit for one proactive chat (seconds; blank adds no limit)",
+        "hint": "Blank adds no plugin time limit; AstrBot still controls model and tool timeouts. A positive integer limits one run from starting work through saving chat history, including preparation, model calls, tools and sending. Waiting for a free execution slot is excluded. Messages already sent are kept."
       }
     },
     "diagnostics": {
@@ -329,7 +329,7 @@
             "description": "Group proactive chat details",
             "daily_limit": {
               "description": "Daily proactive attempt quota per session",
-              "hint": "Blank follows global; overrides apply only to this group. Integer 1–1000. Opportunities are distributed across active time with a random time in each part. A sent or normally completed silent run counts once. Failed, missed or restricted opportunities are not replaced. A new plan is prepared next day. Some or all attempts may choose silence."
+              "hint": "Blank uses the global setting. Enter a number to apply it to this group. Enter 1–1000. All allowed active periods are joined, then this many times are chosen at random. Opportunities are separated by at least the shared cooldown or one minute, whichever is longer. Fewer are scheduled if time is too short. Sending or finishing normally without sending uses one attempt. Failed, missed or skipped opportunities are not replaced; tomorrow gets a new plan."
             },
             "prompts": {
               "description": "Proactive prompt variants",
@@ -398,11 +398,11 @@
           },
           "agenda_preview_days": {
             "description": "Group schedule preview days",
-            "hint": "inherit follows global; a number overrides it. Blank means unlimited for this group. 0 disables automatic context; tools and pause rules remain available."
+            "hint": "Enter inherit to use the global setting, or a number to use that many days for this group. Blank means unlimited. 0 stops automatic schedule context; tools and pause rules still work."
           },
           "agenda_max_items": {
-            "description": "Group schedule context item limit",
-            "hint": "inherit follows global; a positive integer overrides it. Blank means unlimited. Limits current and upcoming items separately."
+            "description": "Group: Schedules provided to the bot per request",
+            "hint": "Enter inherit to use the global setting, or a positive integer to use that item limit for this group. Blank means unlimited. Ongoing and upcoming schedules are counted separately."
           },
           "routine_overrides": {
             "description": "Group routine settings",
@@ -437,7 +437,11 @@
       },
       "outside_scope": {
         "description": "Provide global schedules outside plugin scope",
-        "hint": "Outside-scope sessions can receive global/shared and targeted schedules, query them and manage their own exclusive records. Does not enable interjections or proactive chat. Also allows target SIDs in the global schedule editor."
+        "hint": "Chats outside the list can receive global schedules and schedules assigned specifically to them, and can query and manage their own schedules. This does not enable interjections or proactive chat. It also allows target SIDs in the global schedule editor."
+      },
+      "allow_global_management": {
+        "description": "Allow Agent to manage global schedules",
+        "hint": "The bot can read, create, edit and delete shared global schedules as well as this chat's own schedules. This chat is the default. Global schedules excluded from this group can still be found and managed. Group schedules and records shared by selected chats stay read-only. Set who can use the tools in AstrBot WebUI Components."
       },
       "background_description": {
         "description": "Schedule context description",
@@ -445,11 +449,11 @@
       },
       "preview_days": {
         "description": "Schedule preview days",
-        "hint": "Default 7 days. Blank means unlimited future range; 0 disables the automatic description/JSON, while schedule tools remain available. Repeats contribute their next occurrence only."
+        "hint": "Provide the next 7 days by default. Blank means no day limit. 0 stops automatic schedule context; query, management and pause rules still work. A repeating schedule contributes its next occurrence only."
       },
       "max_items": {
-        "description": "Schedule context item limit",
-        "hint": "Blank is unlimited. A positive integer limits ongoing and upcoming context items separately. Tool queries are not limited by this setting."
+        "description": "Schedules provided to the bot per request",
+        "hint": "Blank means unlimited. A positive integer limits ongoing and upcoming schedules separately: 5 allows up to 5 ongoing and 5 upcoming items. Tool queries are unaffected."
       },
       "events": {
         "description": "Schedule",
@@ -779,7 +783,7 @@
         "sd20f4b9d0a": "Choose a session with scheduled opportunities first.",
         "s2609b6adc1": "Loading opportunities. If unavailable, reload the plugin and refresh the page.",
         "s84ef3cdcba": "The session and timeline use different timezones. Align them in routine settings first.",
-        "s05b8962d33": "No future unattempted opportunities remain today.",
+        "s05b8962d33": "No proactive chat opportunities remain for today.",
         "sb6e8f870fd": "An opportunity is due; waiting for a status update.",
         "sfcfdc4db71": "Redistribute proactive chat?",
         "s5e552e7d27": "Session: ",
@@ -843,13 +847,13 @@
         "s458881e74e": "Sleep pauses interjections and proactive chat; normal mentions still work. In a group, blank inherits; none removes the sleep period.",
         "sf6421bc63c": "Only active periods allow proactive chat. In a group, blank inherits; none disables proactive periods.",
         "se0534d9316": "Limits judgment references only, without deleting history. 0 initially selects all messages.",
-        "sfaed2cb69f": "Blank uses AstrBot limits. A positive integer adds a whole-run timeout without changing model/tool limits.",
+        "sfaed2cb69f": "Blank adds no time limit. Enter seconds to limit one proactive chat.",
         "scc15532005": "Follow global, enable or disable schedules for this group. Disabling does not delete records.",
-        "sdd78be7885": "Default 7. Blank is unlimited; 0 disables automatic schedule context while tools remain available.",
-        "s274042be07": "Blank is unlimited. A positive integer limits current and upcoming items separately.",
-        "s7c552e3b5d": "inherit follows global; a number overrides it. Blank means unlimited for this group; 0 disables automatic context.",
-        "sae4b438099": "inherit follows global; a positive integer overrides it. Blank means unlimited for this group.",
-        "s7431ecb074": "Outside-scope sessions may read global schedules and manage their own exclusive schedules.",
+        "sdd78be7885": "Provide the next 7 days by default. Blank means no day limit. 0 stops automatic schedule context; query, management and pause rules still work. A repeating schedule contributes its next occurrence only.",
+        "s274042be07": "Blank means unlimited. A positive integer limits ongoing and upcoming schedules separately: 5 allows up to 5 ongoing and 5 upcoming items. Tool queries are unaffected.",
+        "s7c552e3b5d": "Follow global by default, or enter this group's day limit. Blank is unlimited; 0 stops automatic context but keeps tools available.",
+        "sae4b438099": "Follow global by default, or enter this group's item limit. Blank means unlimited.",
+        "s7431ecb074": "Chats outside the list can use schedules and manage their own records. This does not enable interjections or proactive chat.",
         "s5a2c54f96a": "Shared by all sessions. Blank restores the default; schedule JSON is appended automatically.",
         "sfe0b615664": "Once, daily, weekly, yearly or Cron. Choose daily/weekly if unfamiliar with Cron.",
         "sf8820c0c57": "All-day events cover the day. A time range with an earlier end crosses midnight.",
@@ -954,7 +958,7 @@
         "s9e3a29f2f6": "Records and troubleshooting",
         "sab339e4743": "Stages and text snapshots are collected temporarily, including requests, responses, tool results and sending. Snapshots may contain chat text. Known secrets and encoded media are hidden; trimmed text is marked.",
         "s2228cf92fd": "Resources and timeouts",
-        "s1cc75682a4": "Concurrency limits are shared by all sessions. Leave the proactive whole-run timeout blank to use AstrBot's model/tool limits. A positive integer adds a plugin whole-run limit without changing judgment request timeouts.",
+        "s1cc75682a4": "Set how many judgment and proactive tasks may run at once across all chats. Leave the proactive time limit blank, or enter a limit for each run. Model and tool timeouts stay unchanged.",
         "s9c36d20a0b": "Try sample scores",
         "s1c6bbd765f": "Adjust sample scores and weights to compare against the current threshold. This is a local calculation: it does not change settings, call models or send messages.",
         "sc80dceb4f8": "Use current configured weights",
@@ -1019,8 +1023,8 @@
         "s6261e0cb27": " · This stage: ",
         "s88568e1855": " s · Execution: ",
         "s302e66cfea": " s · ",
-        "s4a6f2fe68b": "AstrBot limits; no plugin whole-run deadline",
-        "s5420d3887f": "Plugin whole-run limit: ",
+        "s4a6f2fe68b": "No proactive chat time limit set",
+        "s5420d3887f": "Time limit for one proactive chat: ",
         "s702d41b438": "Model calls: ",
         "sc1ba9be609": " · Tool calls: ",
         "see9a69e60d": " · ",
@@ -1035,7 +1039,7 @@
         "s6645035702": "Discard and reload",
         "sc139715f77": "Connected · Configuration and runtime status shown separately",
         "s45cf57e999": "Configuration loaded, but runtime status is unavailable: ",
-        "s4cdfc111e2": "Save configuration changes. Schedule actions save separately. Deleting groups also deletes their exclusive schedules and exclusions. Saving cancels pending judgments and clears replay records, while keeping completed opportunities and used quota. Only routine, timezone or daily-limit changes resample future opportunities.",
+        "s4cdfc111e2": "Save configuration changes. Schedule actions save separately. Deleting groups also deletes their exclusive schedules and exclusions. Saving cancels pending judgments and clears replay records, while keeping completed opportunities and used quota. Changes to routine, timezone, daily quota or shared cooldown reschedule opportunities that have not started.",
         "s5d2dde0a21": " The Jev endpoint changed. Credentials and judgment references will be sent there; confirm that it is trusted.",
         "s6ca27c6855": "Save and apply?",
         "s68011d1e60": "Configuration saved and applied. Completed opportunities and used quota are retained. See the routine timeline for the plan.",
@@ -1043,7 +1047,7 @@
         "s996b21b3ae": "Two ways to speak",
         "s3e571af057": "Interjections join an ongoing group conversation; proactive chat starts a conversation at a suitable time. The original session agent writes replies. Normal mentions and commands still work. This tutorial does not change settings or send messages.",
         "s62b5416c41": "Start with one test session",
-        "s87c15e43af": "Chat with the bot once. An administrator can send /active_status to copy the full SID into a test group. Adding any group enables whitelist mode; no groups means all supported known sessions.",
+        "s87c15e43af": "Chat with the bot once. An administrator can send /active_status to copy the full SID into a test group. Any group limits interjections and proactive chat to listed sessions; no groups shares global settings. The plugin does not scan every group the bot has joined. Enable the plugin and proactive chat, then send a message in each target session so it can be recorded and scheduled separately.",
         "sad0aa8e5c7": "Configure the judgment model",
         "s1bced343f4": "For interjections, disable AstrBot's built-in active reply. Select a configured LLM or enter a compatible Jev endpoint and key in Global settings. This model only scores; the original chat model writes replies. Proactive chat alone needs no judgment model.",
         "sa0d738333b": "Automatic fallback for chat references",
@@ -1092,7 +1096,8 @@
         "s1f60132232": "Filter start date",
         "s51d89b73e2": "Filter end date",
         "s281dbd5f95": "Dates must be between 1900 and 2199.",
-        "s229f1f76a2": "End date cannot precede start date."
+        "s229f1f76a2": "End date cannot precede start date.",
+        "s911de6acea": "The bot can choose this chat or shared global schedules. This chat is the default. Set who can use the tools in AstrBot Components."
       },
       "runtime": {
         "s274d480aa7": "Recent group messages may overlap native history or group context. They are reference data.",
@@ -1183,7 +1188,7 @@
         "sf3cecdf4cd": "Judgment slot acquired",
         "s4225b8b634": "Judgment failed: ",
         "s5e44489566": "The previous proactive run is still active in this session.",
-        "s05b8962d33": "No future unattempted opportunities remain today.",
+        "s05b8962d33": "No proactive chat opportunities remain for today.",
         "s256783b7d4": "Enabled",
         "s6c14bd7f6f": "Disabled",
         "sb63f91b9f2": "Applies",
@@ -1195,7 +1200,7 @@
         "sb60bae39f7": "Not scheduled yet",
         "s5dbd015496": "None",
         "s084162d78f": " model calls",
-        "sfd16edc5e4": "Snapshot expired while queued",
+        "sfd16edc5e4": "The wait was too long and the judgment context is out of date. This interjection was skipped.",
         "se2f33bb239": "An interjection-pause schedule began while queued",
         "s60cdd3398b": "Remaining opportunities do not match today's quota. Refresh and check runtime status.",
         "s491d647239": "Save interrupted; reload to recover.",
@@ -2317,8 +2322,8 @@
     }
   },
   "tools": {
-    "query_description": "Read schedules visible in the CURRENT conversation; this tool never changes data. Use range (default) for current/future occurrences, or supply dates to read the past. Each rule appears once: the FIRST occurrence overlapping the requested range, with its repeat rule. status describes that occurrence, not whether the whole recurring rule has ended. Use catalog to list all visible rules, including disabled ones, before editing. To edit/delete, copy id and revision from this result into manage_schedule. Only editable=true rules can be changed. Shared global/group rules are read-only. Schedules are background context, NOT timed reminders.",
-    "manage_description": "Manage schedules belonging ONLY to the CURRENT conversation. Never accepts a target SID. create: pass action=create and a nonempty events array; omit id/revision/changes. update: query_schedule first, then pass action=update, exact id, revision, and changes containing ONLY fields to change. delete: query first, then pass action=delete, exact id and revision; omit events/changes. Only editable=true records can be updated/deleted. Global/group/multi-session rules are read-only. Updating/deleting a repeating rule affects the ENTIRE series, not one occurrence. Dates use the current conversation timezone. No reminders are created. Omit unused optional fields; do not use null. Report success ONLY when saved=true. Examples: {\"action\":\"create\",\"events\":[{\"title\":\"Reading\",\"start_date\":\"2026-10-20\"}]}; {\"action\":\"update\",\"id\":\"<from query>\",\"revision\":\"<from query>\",\"changes\":{\"title\":\"New title\"}}; {\"action\":\"delete\",\"id\":\"<from query>\",\"revision\":\"<from query>\"}.",
+    "query_description": "Query schedules visible in this chat; global/group rules are read-only.\nRead schedule context; no timed reminders.\nFor one day, set start_date/end_date to the same real YYYY-MM-DD date; omit dates to start now.\nBefore update/delete, mode=catalog finds all rules, including disabled ones. Only editable=true may change; copy that record's id/revision.\nDate queries return the first occurrence per rule in range; status describes that occurrence, not the whole series.",
+    "manage_description": "Manage only this chat's exclusive rules; no scope/target SID. Stop global operations until authorized.\nManage schedule context; no timed reminders.\nCreate: action=create + events; each item needs title/start_date. Defaults: all-day, once. Put multiple events in one array.\nTime range: set time_mode=时段 and start_time/end_time (HH:MM).\nUpdate/delete: query_schedule first; only editable=true may change. Copy id/revision. action=update also needs changes; action=delete omits changes. Repeats affect the whole series.\nOnly send fields for the chosen action; no null. Keep enum values literal. saved=true confirms saving. If duplicates must be avoided, query the target day first.\nStructure only; replace angle-bracket placeholders:\n{\"action\":\"create\",\"events\":[{\"title\":\"<event 1 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"},{\"title\":\"<event 2 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"}]}",
     "query_parameters": {
       "type": "object",
       "additionalProperties": false,
@@ -2329,15 +2334,15 @@
             "range",
             "catalog"
           ],
-          "description": "range (default): first occurrence per rule in the date range. catalog: all visible rules, including disabled; dates are ignored."
+          "description": "range (default): first occurrence per rule in the date range. catalog: all rules including disabled ones; dates are ignored. Useful for finding id/revision before edits."
         },
         "start_date": {
           "type": "string",
-          "description": "Optional YYYY-MM-DD, including past dates. Defaults to now. Supplying only a past end date queries up to that day."
+          "description": "Optional real start date as YYYY-MM-DD. Omit to start now. For one day, use the same date as end_date."
         },
         "end_date": {
           "type": "string",
-          "description": "Optional YYYY-MM-DD, inclusive, including past dates. Blank means no end limit. One occurrence per rule in the range."
+          "description": "Optional real end date as YYYY-MM-DD, inclusive. Omit for no end limit. For one day, use the same date as start_date."
         },
         "keyword": {
           "type": "string",
@@ -2346,21 +2351,99 @@
       }
     },
     "create_fields": {
-      "events": "Required nonempty array of schedule objects, e.g. [{\"title\":\"Reading\",\"start_date\":\"2026-10-20\"}]. The whole batch is validated before saving.",
-      "title": "Required nonempty title, at most 80 characters.",
-      "description": "Optional description, at most 1000 characters. Omit for none.",
-      "start_date": "Required start date YYYY-MM-DD, year 1900–2199. Repeats take effect from this day.",
-      "until": "Optional last start date YYYY-MM-DD for repeating events, inclusive. Empty string removes the cutoff.",
-      "enabled": "Optional; defaults to true. false creates a disabled rule.",
-      "time_mode": "Optional; defaults to 全天 (all day). 时段 (time range) requires start_time/end_time. Omit for Cron.",
-      "start_time": "Required for ordinary 时段 rules: HH:MM. Omit for all-day and Cron rules.",
-      "end_time": "Required for ordinary 时段 rules: HH:MM. Earlier than start means next day; cannot equal start. Omit for all-day and Cron.",
-      "repeat": "Optional; defaults to 不重复 (once). 每天=daily, 每周=selected weekdays, 每年=same month/day yearly, Cron=expression.",
-      "weekdays": "Required only for 每周: at least one weekday value, e.g. [\"周一\",\"周五\"]. Omit otherwise.",
-      "cron": "Required only for Cron: five fields (minute hour day month weekday), e.g. 0 7 * * * for daily 07:00.",
-      "cron_duration_minutes": "Cron only; integer 1–1440 minutes, default 60.",
-      "pause_interjection": "Optional; true pauses interjections during the event. Default false.",
-      "pause_proactive": "Optional; true pauses proactive chat during the event. Default false."
+      "events": "create only: nonempty array, even for one item; batch items with title/start_date. Omit for update/delete.",
+      "title": "Required title, 1–80 characters.",
+      "description": "Description, up to 1000 characters; default empty.",
+      "start_date": "Required real YYYY-MM-DD, year 1900–2199; no today/placeholders. Use run date context or query result now.",
+      "until": "Last start date for repeats, YYYY-MM-DD inclusive; empty means unlimited.",
+      "enabled": "Default true; false creates a disabled rule.",
+      "time_mode": "Default 全天 (all-day); set 时段 for start/end times. Omit for Cron.",
+      "start_time": "Required for ordinary 时段: HH:MM. Omit for all-day/Cron.",
+      "end_time": "Required for ordinary 时段: HH:MM. Earlier means next day; cannot equal start. Omit for all-day/Cron.",
+      "repeat": "Default 不重复=once; 每天=daily, 每周=selected weekdays, 每年=start month/day yearly, Cron=expression.",
+      "weekdays": "Required only for 每周: at least one value, e.g. [\"周一\",\"周五\"].",
+      "cron": "Required only for Cron: minute hour day month weekday, e.g. 0 7 * * *.",
+      "cron_duration_minutes": "Cron only: integer 1–1440 minutes; default 60.",
+      "pause_interjection": "true pauses interjections during the event; default false.",
+      "pause_proactive": "true pauses proactive chat during the event; default false."
+    },
+    "global_query_description": "scope=session (default): visible in this chat; global: all shared global rules, including group exclusions, excluding group/targeted rules. For edits, copy the record's own scope, which may differ from the query scope. Dates use the selected scope's timezone.\nRead schedule context; no timed reminders.\nFor one day, set start_date/end_date to the same real YYYY-MM-DD date; omit dates to start now.\nBefore update/delete, mode=catalog finds all rules, including disabled ones. Only editable=true may change; copy that record's id/revision.\nDate queries return the first occurrence per rule in range; status describes that occurrence, not the whole series.",
+    "global_manage_description": "scope=session (default, exclusive to this chat) or global (shared global). Keep scope at the top level; for edits copy the original record's scope, without moving it. Group/multi-chat targeted rules stay read-only.\nManage schedule context; no timed reminders.\nCreate: action=create + events; each item needs title/start_date. Defaults: all-day, once. Put multiple events in one array.\nTime range: set time_mode=时段 and start_time/end_time (HH:MM).\nUpdate/delete: query_schedule first; only editable=true may change. Copy id/revision. action=update also needs changes; action=delete omits changes. Repeats affect the whole series.\nOnly send fields for the chosen action; no null. Keep enum values literal. saved=true confirms saving. If duplicates must be avoided, query the target day first.\nGlobal create structure; replace angle-bracket placeholders:\n{\"scope\":\"global\",\"action\":\"create\",\"events\":[{\"title\":\"<event 1 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"},{\"title\":\"<event 2 title>\",\"start_date\":\"<real YYYY-MM-DD date>\"}]}",
+    "scope_parameter": {
+      "type": "string",
+      "enum": [
+        "session",
+        "global"
+      ],
+      "default": "session",
+      "description": "session (default)=this chat; global=shared global. Top level only; for update/delete copy the record's scope."
+    },
+    "manage_fields": {
+      "action": "Required. create: events; update: id/revision/changes; delete: id/revision. Omit other fields; no null.",
+      "id": "update/delete only: copy the queried ID, not the title.",
+      "revision": "update/delete only: copy the same record's revision; query again if stale.",
+      "changes": "update only: nonempty object of changed schedule fields; omissions stay unchanged. No identity/version/scope fields."
+    },
+    "change_fields": {
+      "title": "New title, 1–80 characters.",
+      "description": "New description, up to 1000 characters; empty string clears it.",
+      "start_date": "New start date YYYY-MM-DD, year 1900–2199.",
+      "until": "Last start date for repeats, YYYY-MM-DD inclusive; empty string removes cutoff.",
+      "enabled": "true enables the rule; false disables it.",
+      "time_mode": "全天=all-day or 时段=time range; time ranges need start/end times.",
+      "start_time": "Required for ordinary 时段: HH:MM. Omit for all-day/Cron.",
+      "end_time": "Required for ordinary 时段: HH:MM. Earlier means next day; cannot equal start. Omit for all-day/Cron.",
+      "repeat": "不重复, 每天, 每周, 每年 or Cron. Weekly needs weekdays; Cron needs cron.",
+      "weekdays": "Required only for 每周: at least one value, e.g. [\"周一\",\"周五\"].",
+      "cron": "Required only for Cron: minute hour day month weekday, e.g. 0 7 * * *.",
+      "cron_duration_minutes": "Cron duration, integer 1–1440 minutes.",
+      "pause_interjection": "true pauses interjections during the event; false does not.",
+      "pause_proactive": "true pauses proactive chat during the event; false does not."
+    },
+    "types": {
+      "string": "a text string",
+      "boolean": "true or false",
+      "integer": "an integer",
+      "array": "a JSON array",
+      "object": "a JSON object",
+      "number": "a number"
+    },
+    "messages": {
+      "arguments": "arguments",
+      "disabled": "Schedules are disabled for this chat, or the plugin is off. Nothing was saved. Stop this schedule operation instead of repeatedly retrying.",
+      "global_disabled": "Allow Agent to manage global schedules is off. Nothing was saved. Stop this global operation until an administrator enables it. Do not keep changing arguments or silently create chat-only schedules instead.",
+      "configuration_invalid": "Schedule settings for this scope are invalid. Ask an administrator to fix them in the console before querying again.",
+      "conversation_mismatch": "The calling chat does not match this tool. Nothing was saved. You cannot choose another chat as the target.",
+      "catalog_note": "All rules in the selected scope, including disabled rules. Only editable=true records may be changed. Copy that record's id, revision and scope for an update or deletion.",
+      "occurrences": "Only the first occurrence of each rule in the requested range is returned.",
+      "status_ended": "ended",
+      "status_ongoing": "ongoing",
+      "status_upcoming": "upcoming",
+      "invalid_scope": "scope must be session or global. Keep these literal values. When global authorization is off, omit scope.",
+      "missing_fields": "{field} is missing required fields: {fields}. Supply them before calling again. Each new event needs at least title and start_date.",
+      "unknown_fields": "{field} contains unsupported fields: {fields}. Remove those fields entirely; do not replace them with empty values.",
+      "field_type": "{field} must be {kind}. Do not use null instead of omission. Leave unused optional fields out.",
+      "field_enum": "{field} must be exactly one of {choices}. Do not translate these values.",
+      "field_format": "{field} must use {pattern}. Enter a real date or time, not an example placeholder.",
+      "field_empty": "{field} cannot be empty. Omit the entire field if it is optional and unused.",
+      "field_length": "{field} allows at most {maximum} characters. Shorten it before calling again.",
+      "field_bounds": "{field} must be between {minimum} and {maximum}. Use the documented field range.",
+      "field_unique": "{field} must not contain duplicates. Remove duplicates before calling again.",
+      "invalid_parameters": "{field} does not match the tool schema. Follow its field description before calling again.",
+      "action_fields": "action={action} requires exactly: {required}; authorized calls may also include scope. Missing: {missing}. Extra: {extra}. Supply missing fields and remove extra fields; do not fill them with null.",
+      "read_only_or_scope": "The record is missing, read-only, or belongs to another scope. Nothing was saved. Query again and copy that record's id, revision and scope. Only editable=true records may be changed. Group or multi-chat targeted rules cannot be changed by this tool.",
+      "revision_changed": "The schedule changed since the query. Nothing was saved. Run query_schedule again, then copy the latest id, revision and scope. Do not retry with the old revision.",
+      "events_required": "events must be a nonempty JSON array. Use square brackets even for one event; put multiple events in the same array.",
+      "event_object": "Each events item must be a schedule object with fields such as title and start_date.",
+      "cron_integer": "cron_duration_minutes must be an integer number of minutes, not a decimal.",
+      "date_invalid": "start_date must be a valid YYYY-MM-DD date with year 1900–2199. Do not use today or an example placeholder.",
+      "weekdays_required": "repeat=每周 requires weekdays with at least one value from 周一, 周二, 周三, 周四, 周五, 周六, 周日.",
+      "cron_required": "repeat=Cron requires cron. Prefer the daily or weekly repeat options for ordinary daily or weekly events.",
+      "cron_invalid": "cron is invalid. Use five fields: minute hour day month weekday.",
+      "time_fields_required": "time_mode=时段 requires both start_time and end_time as HH:MM. Missing: {fields}. For an all-day event use time_mode=全天 and omit both times.",
+      "same_time": "end_time cannot equal start_time. For an all-day event use time_mode=全天 and omit start_time/end_time.",
+      "event_error": "Event {index} is invalid: {detail}",
+      "not_confirmed": "The schedule operation was not confirmed. Query to verify first; do not claim it was saved or immediately create it again. Ask an administrator to inspect logs if needed."
     }
   }
 }
