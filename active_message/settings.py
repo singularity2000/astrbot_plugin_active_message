@@ -231,8 +231,6 @@ class Settings:
             overlay(merged["context"], item.get("context_overrides", {}), self.schema["context"]["items"])
             if not blank(item.get("threshold_override")):
                 overlay(merged["interjection"], {"threshold": item["threshold_override"]}, self.schema["interjection"]["items"])
-            if not blank(inter.get("activation_prompts")):
-                merged["activation_prompts"] = copy.deepcopy(inter["activation_prompts"])
             if not blank(item.get("cooldown_override")):
                 overlay(merged["interjection"], {"cooldown_seconds":item["cooldown_override"]}, self.schema["interjection"]["items"])
             mode = item.get("decision_mode", "inherit")
@@ -370,9 +368,6 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
             if group.interjection_mode != "disabled":
                 check("interjection", f"session_groups[{index}].threshold_override", group.threshold,
                       "阈值须留空或填写 0～1 的有限数字。")
-        for index, prompt in enumerate(config.activation_prompts):
-            check("interjection", f"activation_prompts[{index}]", lambda p=prompt: validate_template(p),
-                  "存在未知占位符，请查看控制台的占位符助手。")
         if config.model_weight:
             decision = config.decision
             if decision.mode not in {"llm", "jev"}:

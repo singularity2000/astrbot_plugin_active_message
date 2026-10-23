@@ -286,7 +286,6 @@
   $('scope').onchange=()=>{state.scope=Number($('scope').value);state.calendarSid='';state.effective=null;state.previewSeq++;render();if(state.tab==='schedule')refreshStatus().catch(fail);};
   function phaseFor(path) {
     if(path.includes('decision')&&['prompt','jev_state_template'].includes(path.at(-1)))return 'decision';
-    if(path.at(-1)==='activation_prompts')return 'activation';
     if(path.includes('proactive_chat')&&['prompts','task_prompt'].includes(path.at(-1)))return 'proactive';
     return null;
   }
@@ -516,7 +515,7 @@
         model.append(field('decision_mode',gs.decision_mode,group,['interjection','decision','mode'],true));
         model.append(el('p',t("pages.console.ui.s794c08e40b"),'muted'));
         appendFields(model,group.decision_overrides,gs.decision_overrides.items,['interjection','decision'],true);
-        for(const [key,meta] of Object.entries(gs.interjection_overrides.items))if(key!=='activation_prompts')rules.append(field(key,meta,group.interjection_overrides,['interjection',key],true));
+        for(const [key,meta] of Object.entries(gs.interjection_overrides.items))rules.append(field(key,meta,group.interjection_overrides,['interjection',key],true));
         for(const key of ['weights','activity','energy']){const b=section(gs['interjection_'+key].description);appendFields(b,group['interjection_'+key],gs['interjection_'+key].items,['interjection',key],true);rules.append(b);}
       } else {
         box.append(field('enabled',state.schema.interjection.items.enabled,state.config.interjection,['interjection','enabled']));
@@ -527,16 +526,23 @@
         appendFields(rules,state.config.interjection,Object.fromEntries(Object.entries(state.schema.interjection.items).filter(([k])=>!['enabled','decision'].includes(k))),['interjection']);
       }
       renderScore(root);
-      const prompts=section(t("pages.console.ui.sbdcfcf89c0"),t("pages.console.ui.s1d17a5dcc2"));prompts.id='activation-settings';root.append(prompts);
-      if(group)prompts.append(field('activation_prompts',gs.interjection_overrides.items.activation_prompts,group.interjection_overrides,['activation_prompts'],true));
-      else appendFields(prompts,state.config,{activation_prompts:state.schema.activation_prompts});
-      renderPlaceholders(root,['decision','activation']);
+      renderPlaceholders(root,['decision']);
     } else if(['proactive','schedule'].includes(state.tab)) {
       const isSchedule=state.tab==='schedule',configKey=isSchedule?'routine':'proactive_chat',groupKey=isSchedule?'routine_overrides':'proactive_overrides';
       const box=section(isSchedule?t("pages.console.ui.s82ced76822"):t("pages.console.ui.s5e6f228dbe"),isSchedule?t("pages.console.ui.s53a2651bb8"):t("pages.console.ui.s39044d7217"));box.id='feature-settings';root.append(box);
       if(group&&!isSchedule)box.append(field('proactive_mode',gs.proactive_mode,group,['proactive_chat','enabled'],true));
       const obj=group?group[groupKey]:state.config[configKey],metas=group?gs[groupKey].items:state.schema[configKey].items;
       appendFields(box,obj,metas,[configKey],!!group);
+      if(!isSchedule){
+        const link=el('div',undefined,'actions'),jump=el('button',t('pages.console.ui.shared_cooldown_jump'));jump.type='button';
+        jump.onclick=()=>{
+          const groupIndex=state.scope;selectTab(groupIndex<0?'interjection':'groups');
+          const selector=groupIndex<0?'.field[data-path="interjection.cooldown_seconds"] input':`.group-card[data-group-index="${groupIndex}"] .field[data-path="cooldown_override"] input`;
+          const input=$('content').querySelector(selector);input?.focus({preventScroll:true});input?.closest('.field').scrollIntoView({block:'center'});
+        };
+        link.append(el('small',t('pages.console.ui.shared_cooldown_note')),jump);
+        box.querySelector('.field[data-path="proactive_chat.daily_limit"]').after(link);
+      }
       if(isSchedule){const strip=section(t("pages.console.ui.s413c499e83"));strip.id='schedule-preview';root.append(strip);scheduleStrip();agendaUI.render(root,group);}else renderPlaceholders(root,['proactive']);
     } else {
       const box=section(t("pages.console.ui.s2c0396b4b4"),t("pages.console.ui.s90cc3f488d"));box.id='context-settings';root.append(box);
@@ -587,7 +593,7 @@
     const result=el('p',t("pages.console.ui.sb448909ba9")+displayed+(hit?' > ':' ≤ ')+t("pages.console.ui.s83fb0085ca")+cfg.threshold+'：'+(hit?t("pages.console.ui.sc988be8e99"):t("pages.console.ui.se149d965f1")),'score-outcome');
     result.classList.toggle('pass',hit);box.append(table,result,el('small',t("pages.console.ui.sace5de5932"),'muted'));
   }
-  const phaseLabels=()=>({decision:t("pages.console.ui.s8ddbcd1ba4"),activation:t("pages.console.ui.s901b00d9f7"),proactive:t("pages.console.ui.s65884b86b6")});
+  const phaseLabels=()=>({decision:t("pages.console.ui.s8ddbcd1ba4"),proactive:t("pages.console.ui.s65884b86b6")});
   function renderPlaceholders(root,phases) {
     const box=section(t("pages.console.ui.s5c1c0d296a"),t("pages.console.ui.sd7a762218e"));box.id='placeholder-panel';
     const target=el('span',t("pages.console.ui.se51dc10ae9"));target.id='placeholder-target';box.querySelector('p.muted').append(document.createTextNode(' '),target);
@@ -701,7 +707,6 @@
       ['context','context-settings',t("pages.console.ui.sa0d738333b"),t("pages.console.ui.s510811323f")],
       ['overview','global-switch',t("pages.console.ui.s85d965b80c"),t("pages.console.ui.sff7d2fcc2e")],
       ['interjection','score-lab',t("pages.console.ui.scb72c8da7a"),t("pages.console.ui.se72b383ce2")],
-      ['interjection','activation-settings',t("pages.console.ui.sdc12b27263"),t("pages.console.ui.s706270f9d9")],
       ['schedule','schedule-preview',t("pages.console.ui.s170d090f28"),t("pages.console.ui.s7ae7badbed")],
       ['schedule','agenda-settings',t("pages.console.ui.s3948b31514"),t("pages.console.ui.s2aea5a7d1d")],
       ['schedule','agenda-calendar',t("pages.console.ui.s318ddcd2a7"),t("pages.console.ui.s5fda122586")],

@@ -158,5 +158,5 @@ def placeholder_catalog():
     message_only = {"sender_id", "sender_name", "current_message", "time"}
     return [{"name": key, "token": "{" + key + "}", "description": PLACEHOLDER_DESCRIPTIONS[key],
              "example": PLACEHOLDER_EXAMPLES.get(key, "由当前会话实时填入"),
-             "phases": ["activation"] if key in POST_DECISION else ["decision", "activation"] if key in message_only else ["proactive"] if key == "proactive_remaining" else ["decision", "activation", "proactive"]}
-            for key in order]
+             "phases": ["decision"] if key in message_only else ["proactive"] if key == "proactive_remaining" else ["decision", "proactive"]}
+            for key in order if key not in POST_DECISION]

@@ -130,10 +130,6 @@
         "hint": "Starts when judgment references are prepared, including queue and request time. Stale results are discarded. Ordinary messages do not cancel running judgments; normal activation or a conversation-branch change invalidates them."
       }
     },
-    "activation_prompts": {
-      "description": "Interjection prompt variants",
-      "hint": "Controls how the bot joins after a judgment, not whether to join. One variant is chosen randomly and may repeat. History, names and reasons are reference data, not system instructions."
-    },
     "routine": {
       "description": "Routine settings (shared by both features)",
       "timezone": {
@@ -165,7 +161,7 @@
       },
       "task_prompt": {
         "description": "Proactive task instructions",
-        "hint": "Tell the bot what to do on this opportunity, alongside the style prompts above. Prompts cannot override current-session scope or the requirement to use the send tool."
+        "hint": "Describe this proactive opportunity. Combined with the selected prompt variant as the native future-task description; the native Agent decides whether to send and how to continue."
       }
     },
     "context": {
@@ -278,10 +274,6 @@
             "decision_max_age_seconds": {
               "description": "Judgment validity (seconds)",
               "hint": "Blank follows global; overrides apply only to this group. Starts when judgment references are prepared, including queue and request time. Stale results are discarded. Ordinary messages do not cancel running judgments; normal activation or a conversation-branch change invalidates them."
-            },
-            "activation_prompts": {
-              "description": "Interjection prompt variants",
-              "hint": "Blank follows global; overrides apply only to this group. Controls how the bot joins after a judgment, not whether to join. One variant is chosen randomly and may repeat. History, names and reasons are reference data, not system instructions."
             }
           },
           "interjection_weights": {
@@ -337,7 +329,7 @@
             },
             "task_prompt": {
               "description": "Proactive task instructions",
-              "hint": "Blank follows global; overrides apply only to this group. Tell the bot what to do on this opportunity, alongside the style prompts above. Prompts cannot override current-session scope or the requirement to use the send tool."
+              "hint": "Blank inherits globally; a value overrides this group only. Describe this proactive opportunity. Combined with the selected prompt variant as the native future-task description; the native Agent decides whether to send and how to continue."
             }
           },
           "context_overrides": {
@@ -952,6 +944,8 @@
         "s82ced76822": "Daily routine",
         "s53a2651bb8": "Sleep is quiet; normal periods allow interjections; active periods also allow proactive chat. Normal mentions and native future tasks still work. Sleep takes priority over active periods.",
         "s39044d7217": "The active day is divided into opportunities, each with a random time. At that time the bot may still choose silence. Missed/failed opportunities are not replaced; a new plan is prepared the next day.",
+        "shared_cooldown_note": "Proactive chat and smart interjections share the cooldown after speaking.",
+        "shared_cooldown_jump": "Adjust shared cooldown",
         "s2c0396b4b4": "Chat references",
         "s90cc3f488d": "Group messages first use AstrBot's persistent group history. If unavailable or empty, a read-only copy of pending framework context is tried, then the plugin's temporary messages. The count follows AstrBot's maximum injected group messages. Newer messages are preferred when trimming; see decision replay for details.",
         "sc7a1fecf29": "Enable persistent group history in AstrBot's group context settings; enable group-context injection as needed. Temporary messages accumulate again after reload/restart and are not cleared by the activity window. AstrBot still provides the original history, persona and tools.",
