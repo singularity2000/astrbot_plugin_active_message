@@ -3,6 +3,17 @@
   'use strict';
   const {t,runtime:R,value:V}=window.ActiveMessageI18n;
   const node = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined)n.textContent=text; if(cls)n.className=cls; return n; };
+  let sessionNames=Object.create(null),sessionPattern=null;
+  const sessionLabel=sid=>{const value=String(sid??''),name=sessionNames[value];return typeof name==='string'&&name?value+'（'+name+'）':value;};
+  function sessionReferences(value){
+    const text=String(value??'');
+    if(!sessionPattern)return '';
+    return [...new Set([...text.matchAll(sessionPattern)].map(match=>match[0]))].map(sessionLabel).join('、');
+  }
+  function sessionText(value){
+    const text=String(value??'');
+    return sessionPattern?text.replace(sessionPattern,(sid,offset)=>text[offset+sid.length]==='（'?sid:sessionLabel(sid)):text;
+  }
   // A single floating surface keeps help out of layout, including inside dialogs.
   const helpPopup=node('aside',undefined,'help-popup');helpPopup.id='help-popup';helpPopup.hidden=true;helpPopup.setAttribute('role','tooltip');
   const helpTitle=node('strong'),helpText=node('div',undefined,'help-text');
@@ -172,5 +183,10 @@
     }
     from.onchange=to.onchange=commit;clear.onclick=()=>{from.value=to.value='';commit();};return wrap;
   }
-  window.ActiveMessageUI={node,dialog,copyText,help,helpTag,helpNote,hideHelp,dateRangePicker,preserveView};
+  window.ActiveMessageUI={node,dialog,copyText,help,helpTag,helpNote,hideHelp,dateRangePicker,preserveView,sessionLabel,sessionText,sessionReferences,
+    setSessionNames(names){
+      sessionNames=Object.assign(Object.create(null),names&&typeof names==='object'?names:{});
+      const keys=Object.keys(sessionNames).filter(sid=>typeof sessionNames[sid]==='string'&&sessionNames[sid]).sort((a,b)=>b.length-a.length);
+      sessionPattern=keys.length?new RegExp('(?<![\\w:])(?:'+keys.map(sid=>sid.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')+')(?![\\w:])','g'):null;
+    }};
 })();

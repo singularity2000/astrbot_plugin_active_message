@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const {t,runtime:R,value:V}=window.ActiveMessageI18n;
-  const {node:el,dialog,help,helpNote,preserveView}=window.ActiveMessageUI;
+  const {node:el,dialog,help,helpNote,preserveView,sessionLabel:S,sessionText:ST,sessionReferences:SR}=window.ActiveMessageUI;
   const weekdays=['周一','周二','周三','周四','周五','周六','周日'];
   const clone=v=>JSON.parse(JSON.stringify(v));
   const shortTime=value=>value?.slice(11,16)||'';
@@ -11,7 +11,7 @@
 
   function newId(){const bytes=new Uint8Array(12);crypto.getRandomValues(bytes);return 'event_'+Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('');}
   window.createAgendaUI=({state,render,previewSoon,field,section,persistPrefs,saveAgenda,refreshAgenda,fail})=>{
-    let group=null,calendar=null,selected='';
+    let group=null,calendar=null,selected='',injection=null,injectionSid=null,injectionDraft=null,injectionScope='';
     const listUI=window.createAgendaListUI({state,edit,describe,saveAgenda,refreshAgenda,fail,previewSoon,persistPrefs});
     function globalItems(){return state.config.agenda.events.filter(e=>!e.group_id&&!e.target_sids?.length);}
     function hasId(id,except){return state.config.agenda.events.some(e=>e.id===id&&e.id!==except?.id);}
@@ -51,7 +51,8 @@
       state.saved.session_groups.forEach((g,i)=>scopeSelect.add(new Option((i+1)+'. '+g.group_name,String(i))));const originalOwner=state.saved.session_groups.findIndex(g=>g.agenda_id===draft.group_id);scopeSelect.value=draft.group_id&&originalOwner>=0?String(originalOwner):'global';
       const scopeHeading=el('div',undefined,'help-label');scopeHeading.append(scopeLabel,help(t("pages.console.ui.s2fc4bfb9c4"),t("pages.console.ui.s682cd9abc9")),el('small',t("pages.console.ui.s358202994a"),'field-hint'));scopeField.append(scopeHeading,scopeSelect);form.append(scopeField);
       const sidField=el('div',undefined,'agenda-editor-field agenda-sids'),sidLabel=el('label',t("pages.console.ui.sb3c0d83186")),sidInput=el('textarea');sidInput.id='agenda-target-sids';sidInput.rows=3;sidInput.value=(draft.target_sids||[]).join('\n');sidInput.placeholder=t("pages.console.ui.s5d155e30e5");sidLabel.htmlFor=sidInput.id;
-      sidField.append(sidLabel,sidInput,el('small',t("pages.console.ui.s0f68b508e4"),'field-hint'));form.append(sidField);
+      const sidNames=el('small',SR(sidInput.value),'session-name-reference');sidInput.oninput=()=>{sidNames.textContent=SR(sidInput.value);};
+      sidField.append(sidLabel,sidInput,sidNames,el('small',t("pages.console.ui.s0f68b508e4"),'field-hint'));form.append(sidField);
       control('enabled');
       control('start_date','date');control('until','date');control('repeat');control('time_mode');
       control('start_time','time');control('end_time','time');
@@ -102,7 +103,7 @@
       box.replaceChildren();
       const toolbar=el('div',undefined,'calendar-toolbar'),prev=el('button',t("pages.console.ui.sf789ada6e7")),next=el('button',t("pages.console.ui.s5440e4b874")),today=el('button',t("pages.console.ui.s17e83cc25e")),heading=el('h3',calendar.month);heading.id='calendar-heading';
       const sessionPicker=el('select');sessionPicker.className='calendar-session-picker';sessionPicker.setAttribute('aria-label',t("pages.console.ui.s748c5008e4"));sessionPicker.add(new Option(group?t("pages.console.ui.s450c5058e1"):t("pages.console.ui.s7a399b3205"),''));
-      const targetSids=[...new Set(state.config.agenda.events.flatMap(e=>e.target_sids||[]))].filter(s=>!group||group.sids.includes(s)||group.sids.includes(s.split(':').slice(2).join(':')));targetSids.forEach(s=>sessionPicker.add(new Option(s,s)));sessionPicker.value=state.calendarSid||'';sessionPicker.onchange=()=>{state.calendarSid=sessionPicker.value;state.previewSeq++;previewSoon();};toolbar.append(sessionPicker);
+      const targetSids=[...new Set(state.config.agenda.events.flatMap(e=>e.target_sids||[]))].filter(s=>!group||group.sids.includes(s)||group.sids.includes(s.split(':').slice(2).join(':')));targetSids.forEach(s=>sessionPicker.add(new Option(S(s),s)));sessionPicker.value=state.calendarSid||'';sessionPicker.onchange=()=>{state.calendarSid=sessionPicker.value;state.previewSeq++;previewSoon();};toolbar.append(sessionPicker);
       prev.onclick=()=>monthMove(-1);next.onclick=()=>monthMove(1);today.onclick=()=>{state.calendarMonth='';selected='';state.previewSeq++;previewSoon();};
       const monthPicker=el('input');monthPicker.type='month';monthPicker.min='1900-01';monthPicker.max='2199-12';monthPicker.value=calendar.month;monthPicker.setAttribute('aria-label',t("pages.console.ui.s2c2647d420"));monthPicker.className='calendar-month-picker';monthPicker.onchange=()=>{if(!monthPicker.value||!monthPicker.validity.valid)return;state.calendarMonth=monthPicker.value;state.previewSeq++;selected='';heading.textContent=state.calendarMonth+t("pages.console.ui.sb44e425e82");previewSoon();};
       const navigation=el('div',undefined,'calendar-navigation');navigation.append(prev,today,next);
@@ -122,16 +123,83 @@
       const detail=el('div',undefined,'calendar-details');detail.append(el('h3',selected+t("pages.console.ui.sf944ce6285")));
       const rows=calendar.days.find(d=>d.date===selected)?.events||[];
       if(!rows.length)detail.append(el('p',t("pages.console.ui.s55ecd5dcb5"),'muted'));
-      for(const row of rows){const card=el('article',undefined,'calendar-detail');card.append(el('strong',row.title),el('span',R(row.origin),'tag'));card.append(el('p',(row.all_day?V('全天'):row.times.map(occurrence=>timeText(occurrence)+(occurrence.start.slice(0,10)<selected?'('+occurrence.start.slice(5,10)+t("pages.console.ui.s0948f31159"):'')).join('；'))+(row.more?t("pages.console.ui.s6091ddf56e"):'')));
+      for(const row of rows){const card=el('article',undefined,'calendar-detail');card.append(el('strong',row.title),el('span',ST(R(row.origin)),'tag'));card.append(el('p',(row.all_day?V('全天'):row.times.map(occurrence=>timeText(occurrence)+(occurrence.start.slice(0,10)<selected?'('+occurrence.start.slice(5,10)+t("pages.console.ui.s0948f31159"):'')).join('；'))+(row.more?t("pages.console.ui.s6091ddf56e"):'')));
         const source=state.config.agenda.events.find(e=>e.id===row.id);if(source?.description)card.append(el('p',source.description,'agenda-description'));
         const effects=[row.pause_interjection?t("pages.console.ui.s2e10c4f555"):'',row.pause_proactive?t("pages.console.ui.s016ccdd7f6"):''].filter(Boolean);if(effects.length)card.append(el('small',effects.join(' · ')));detail.append(card);}
       box.append(detail);
-      const status=document.getElementById('agenda-now');if(status){status.replaceChildren();status.append(el('strong',t("pages.console.ui.sb2e2f2416d")+shortTime(calendar.snapshot.now)));if(!state.saved.enabled)status.append(el('p',t("pages.console.ui.s7a96cc9ac6"),'muted'));const current=calendar.snapshot.current;if(!calendar.enabled)status.append(el('p',t("pages.console.ui.s58d5450da0")));else if(!current.length)status.append(el('p',t("pages.console.ui.sd708d50f79")));else current.forEach(row=>status.append(el('p',row.title+' · '+timeText(row)+' · '+([row.pause_interjection?t("pages.console.ui.s25eaa711df"):'',row.pause_proactive?t("pages.console.ui.s016ccdd7f6"):''].filter(Boolean).join('、')||t("pages.console.ui.sdd3424eb2d")))));const settings=state.liveEffective?.agenda;if(settings)status.append(el('small',String(settings.preview_days)==='0'?t("pages.console.ui.s1a81cd7bf8"):t("pages.console.ui.sb50ff3ac0c")+(settings.preview_days===''?t("pages.console.ui.s21c91b0dc6"):settings.preview_days+t("pages.console.ui.sf8bb0516cc"))+t("pages.console.ui.s9bc6e2f943")+(settings.max_items||t("pages.console.ui.s09c4fc252c"))+'。'));}
       restore();
+    }
+    function drawInjection(){
+      const box=document.getElementById('agenda-now');if(!box||!injection)return;
+      const scrolls=[...box.querySelectorAll('ul,pre')].map(n=>({id:n.id,top:n.scrollTop,left:n.scrollLeft}));
+      const expanded=box.querySelector('#agenda-injection-raw')?.open;
+      const pickerWasOpen=box.querySelector('#agenda-injection-sid')?.getAttribute('aria-expanded')==='true';
+      box.replaceChildren();box.dataset.reason=injection.reason;
+      const head=el('div',undefined,'agenda-context-head'),heading=el('h2',t('pages.console.ui.injection_title'));
+      heading.append(help(t('pages.console.ui.injection_title'),t('pages.console.ui.injection_help'),'agenda-injection-help'));
+      head.append(heading);if(injection.reason==='select_session')head.append(el('small',t('pages.console.ui.injection_reason_select_session'),'agenda-context-select-hint'));if(injection.now)head.append(el('small',shortTime(injection.now)+' · '+injection.timezone));box.append(head);
+      const toolbar=el('div',undefined,'agenda-context-toolbar'),label=el('label',t('pages.console.ui.injection_chat')),picker=el('div',undefined,'agenda-session-picker'),input=el('input'),clear=el('button','×','agenda-session-clear'),options=el('div',undefined,'agenda-session-options');
+      input.id='agenda-injection-sid';input.type='text';input.value=injectionDraft??injection.sid;input.placeholder=t('pages.console.ui.injection_sid_placeholder');input.autocomplete='off';input.spellcheck=false;label.htmlFor=input.id;options.id='agenda-injection-options';options.hidden=true;
+      clear.id='agenda-injection-clear';clear.type='button';clear.setAttribute('aria-label',t('pages.console.ui.injection_clear'));clear.title=t('pages.console.ui.injection_clear');clear.hidden=!input.value;
+      input.setAttribute('role','combobox');input.setAttribute('aria-autocomplete','list');input.setAttribute('aria-controls',options.id);input.setAttribute('aria-expanded','false');options.setAttribute('role','listbox');options.setAttribute('aria-label',t('pages.console.ui.injection_chat'));
+      const change=()=>{const value=input.value.trim();if(value===injectionSid)return;injectionSid=value;state.previewSeq++;box.setAttribute('aria-busy','true');box.querySelector('.agenda-context-body')?.remove();previewSoon();};
+      let active=-1;
+      const close=()=>{options.hidden=true;input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');active=-1;};
+      const choose=sid=>{input.value=sid;injectionDraft=sid;clear.hidden=!sid;updateName();close();change();input.focus({preventScroll:true});};
+      clear.onmousedown=e=>e.preventDefault();clear.onclick=()=>choose('');
+      function showOptions(filter=false){
+        options.replaceChildren();active=-1;input.removeAttribute('aria-activedescendant');
+        const query=filter?input.value.trim().toLowerCase():'';
+        injection.sessions.filter(sid=>S(sid).toLowerCase().includes(query)).forEach((sid,index)=>{
+          const option=el('button',S(sid));option.type='button';option.id='agenda-session-option-'+index;option.tabIndex=-1;option.setAttribute('role','option');option.setAttribute('aria-selected','false');option.title=S(sid);option.dataset.sid=sid;
+          option.onmousedown=e=>e.preventDefault();option.onclick=()=>choose(sid);options.append(option);
+        });
+        options.hidden=!options.children.length;input.setAttribute('aria-expanded',String(!options.hidden));
+      }
+      input.onclick=()=>showOptions();input.oninput=()=>{injectionDraft=input.value;clear.hidden=!input.value;updateName();showOptions(true);};
+      input.onblur=e=>{if(picker.contains(e.relatedTarget))return;close();if(!input.value.trim()||/^[^:]+:(GroupMessage|FriendMessage):.+$/.test(input.value.trim()))change();};
+      input.onkeydown=e=>{
+        if(['ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();if(options.hidden)showOptions();const rows=[...options.children];if(!rows.length)return;active=(active+(e.key==='ArrowDown'?1:active<0?0:-1)+rows.length)%rows.length;rows.forEach((row,index)=>row.setAttribute('aria-selected',String(index===active)));input.setAttribute('aria-activedescendant',rows[active].id);rows[active].scrollIntoView({block:'nearest'});}
+        else if(e.key==='Enter'){e.preventDefault();const row=options.children[active];if(!options.hidden&&row)choose(row.dataset.sid);else{close();change();}}
+        else if(e.key==='Escape'&&!options.hidden){e.preventDefault();e.stopPropagation();close();}
+        else if(e.key==='Tab')close();
+      };
+      const selectedName=el('small',SR(input.value),'session-name-reference agenda-session-name');
+      const updateName=()=>{selectedName.textContent=SR(input.value);input.title=S(input.value);};updateName();
+      picker.append(input,clear,options);toolbar.append(label,picker,selectedName);box.append(toolbar);if(pickerWasOpen)showOptions(input.value!==injection.sid);
+      const body=el('div',undefined,'agenda-context-body');box.append(body);box.removeAttribute('aria-busy');
+      if(!['ready','select_session'].includes(injection.reason))body.append(el('p',t('pages.console.ui.injection_reason_'+injection.reason),'agenda-context-empty'));
+      if('preview_days' in injection){
+        const settings=el('div',undefined,'agenda-context-meta');
+        settings.append(el('span',injection.preview_days===0?t('pages.console.ui.injection_days_off'):injection.preview_days===null?t('pages.console.ui.s21c91b0dc6'):t('pages.console.ui.preview_calendar_days',{days:injection.preview_days})),el('span',injection.max_items===null?t('pages.console.ui.injection_no_limit'):t('pages.console.ui.injection_limit',{count:injection.max_items})));
+        body.append(settings);
+      }
+      if(injection.reason==='ready'){
+        const lists=el('div',undefined,'agenda-context-lists');
+        for(const key of ['current','upcoming']){
+          const rows=injection[key];if(!rows.length)continue;
+          const column=el('section',undefined,'agenda-context-column'),title=el('h3',t('pages.console.ui.injection_'+key));title.append(el('span',String(rows.length),'agenda-context-count'));column.append(title);
+          const list=el('ul');list.id='agenda-injection-'+key;
+          for(const row of rows){
+            const item=el('li'),name=el('strong',row.title),stamp=el('span',row.start.slice(0,10)+' · '+timeText(row),'agenda-context-time');
+            item.append(name,stamp);if(row.description){const description=el('p',row.description);description.title=row.description;item.append(description);}list.append(item);
+          }
+          column.append(list);lists.append(column);
+        }
+        body.append(lists);if(injection.truncated)body.append(el('small',t('pages.console.ui.injection_truncated'),'agenda-context-help'));
+      }
+      if(injection.pause_available){
+        const pause=el('div',undefined,'agenda-context-pause');pause.append(el('strong',t('pages.console.ui.injection_pause')));
+        const effects=[];for(const key of ['interjection','proactive'])if(injection['pause_'+key].length)effects.push(t('pages.console.ui.injection_pause_'+key)+injection['pause_'+key].join('、'));
+        pause.append(el('span',effects.length?effects.join('；'):t('pages.console.ui.injection_pause_none')));body.append(pause);
+      }
+      if(injection.text){const raw=el('details',undefined,'agenda-context-raw'),text=el('pre',injection.text);raw.id='agenda-injection-raw';raw.open=!!expanded;text.id='agenda-injection-text';raw.append(el('summary',t('pages.console.ui.injection_raw')));const references=SR(injection.text);if(references)raw.append(el('small',references,'session-name-reference'));raw.append(text);body.append(raw);}
+      scrolls.forEach(value=>{const node=document.getElementById(value.id);if(node){node.scrollTop=value.top;node.scrollLeft=value.left;}});
     }
     return {
       render(root,selectedGroup){
         group=selectedGroup;calendar=null;
+        const scope=selectedGroup?.agenda_id||'global';if(injectionScope!==scope){injectionScope=scope;injectionSid=null;injectionDraft=null;}injection=null;
         const gs=state.schema.session_groups.templates.group.items,box=section(t("pages.console.ui.s21649f1663"),t("pages.console.ui.sf42007e551"));box.id='agenda-settings';
         box.append(group?field('agenda_mode',gs.agenda_mode,group,['agenda','enabled'],true):field('enabled',state.schema.agenda.items.enabled,state.config.agenda,['agenda','enabled']));
         if(!group)for(const key of ['outside_scope','allow_global_management'])box.append(field(key,state.schema.agenda.items[key],state.config.agenda,['agenda',key]));
@@ -144,8 +212,9 @@
         renderList(box);root.append(box);const current=el('div',undefined,'agenda-now');current.id='agenda-now';current.append(el('p',t("pages.console.ui.sb96a866864")));root.append(current);
         const month=section(t("pages.console.ui.s61edb85240"),t("pages.console.ui.sf3086c7326"));month.id='agenda-calendar';month.append(el('p',t("pages.console.ui.s339a81bffd"),'muted'));root.append(month);
       },
-      previewParams(){return listUI.params();},
-      update(data,list){calendar=data;state.calendarMonth=data.month;drawCalendar();if(list)listUI.update(list);}
+      previewParams(){return {...listUI.params(),injection_sid:injectionSid};},
+      updateInjection(context){injection=context;injectionSid=injection.sid;injectionDraft??=injection.sid;drawInjection();},
+      update(data,list,context){calendar=data;injection=context||null;if(injection){injectionSid=injection.sid;injectionDraft??=injection.sid;}state.calendarMonth=data.month;drawCalendar();drawInjection();if(list)listUI.update(list);}
     };
   };
 })();

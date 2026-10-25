@@ -222,7 +222,7 @@
     },
     "session_groups": {
       "description": "Session groups: choose the scope",
-      "hint": "No groups means all supported known sessions. Adding any group limits interjections/proactive chat to listed sessions. Outside-scope schedules have a separate switch. Group schedule limits use inherit for global defaults; blank means unlimited. Most other blank group fields inherit.",
+      "hint": "No groups means all supported known sessions. Adding any group limits interjections/proactive chat to listed sessions. Outside-scope schedules have a separate switch. Enter inherit or 跟随全局 for global schedule defaults. Blank preview days includes ongoing schedules only; a blank item limit means unlimited. Most other blank group fields inherit.",
       "templates": {
         "group": {
           "name": "Session groups",
@@ -390,11 +390,11 @@
           },
           "agenda_preview_days": {
             "description": "Group schedule preview days",
-            "hint": "Enter inherit to use the global setting, or a number to use that many days for this group. Blank means unlimited. 0 stops automatic schedule context; tools and pause rules still work."
+            "hint": "Enter inherit or 跟随全局 to use the global setting; both settings interfaces accept either spelling. A positive integer n previews n calendar days starting today, using the session timezone. Blank includes ongoing schedules only. 0 disables automatic context; tools and pause rules still work."
           },
           "agenda_max_items": {
             "description": "Group: Schedules provided to the bot per request",
-            "hint": "Enter inherit to use the global setting, or a positive integer to use that item limit for this group. Blank means unlimited. Ongoing and upcoming schedules are counted separately."
+            "hint": "Enter inherit or 跟随全局 to use the global setting; both settings interfaces accept either spelling. A positive integer sets this group's item limit. Blank means unlimited. Ongoing and upcoming schedules are counted separately."
           },
           "routine_overrides": {
             "description": "Group routine settings",
@@ -441,7 +441,7 @@
       },
       "preview_days": {
         "description": "Schedule preview days",
-        "hint": "Provide the next 7 days by default. Blank means no day limit. 0 stops automatic schedule context; query, management and pause rules still work. A repeating schedule contributes its next occurrence only."
+        "hint": "Default: 7 days. A positive integer n includes ongoing schedules and upcoming schedules within n calendar days starting today, using the session timezone. 1 ends tonight; 2 ends tomorrow night. Blank includes ongoing schedules only. 0 disables automatic context; query, management and pause rules still work. Only the next upcoming occurrence of each repeating schedule is included."
       },
       "max_items": {
         "description": "Schedules provided to the bot per request",
@@ -712,7 +712,7 @@
         "sdd3424eb2d": "Background context only",
         "s1a81cd7bf8": "Automatic schedule context is off. The agent can still query and manage schedules.",
         "sb50ff3ac0c": "Automatic context preview: ",
-        "s21c91b0dc6": "Unlimited future range",
+        "s21c91b0dc6": "Ongoing schedules only",
         "sf8bb0516cc": " days",
         "s9bc6e2f943": "; items: ",
         "s09c4fc252c": "Unlimited",
@@ -745,8 +745,8 @@
         "s7b0ae4c99f": "Refresh records",
         "seea28ea3ee": " Refresh every 5 seconds while visible",
         "sdcdf72163c": "Filter session group",
-        "s4598fe6c7d": "Partial matches supported",
-        "sddc0ff6de0": "Search SID",
+        "s4598fe6c7d": "Search SID or chat name",
+        "sddc0ff6de0": "Search SID or chat name",
         "s2d6db4126f": "Record time range",
         "sb7150505d5": "Last 5 minutes",
         "s40276e3f9b": "Last 30 minutes",
@@ -841,10 +841,10 @@
         "se0534d9316": "Limits judgment references only, without deleting history. 0 initially selects all messages.",
         "sfaed2cb69f": "Blank adds no time limit. Enter seconds to limit one proactive chat.",
         "scc15532005": "Follow global, enable or disable schedules for this group. Disabling does not delete records.",
-        "sdd78be7885": "Provide the next 7 days by default. Blank means no day limit. 0 stops automatic schedule context; query, management and pause rules still work. A repeating schedule contributes its next occurrence only.",
+        "sdd78be7885": "Default: 7 days. A positive integer n includes ongoing schedules and upcoming schedules within n calendar days starting today, using the session timezone. 1 ends tonight; 2 ends tomorrow night. Blank includes ongoing schedules only. 0 disables automatic context; query, management and pause rules still work. Only the next upcoming occurrence of each repeating schedule is included.",
         "s274042be07": "Blank means unlimited. A positive integer limits ongoing and upcoming schedules separately: 5 allows up to 5 ongoing and 5 upcoming items. Tool queries are unaffected.",
-        "s7c552e3b5d": "Follow global by default, or enter this group's day limit. Blank is unlimited; 0 stops automatic context but keeps tools available.",
-        "sae4b438099": "Follow global by default, or enter this group's item limit. Blank means unlimited.",
+        "s7c552e3b5d": "Enter inherit or 跟随全局 to use the global setting; both settings interfaces accept either spelling. A positive integer n previews n calendar days starting today, using the session timezone. Blank includes ongoing schedules only. 0 disables automatic context; tools and pause rules still work.",
+        "sae4b438099": "Enter inherit or 跟随全局 to use the global setting; both settings interfaces accept either spelling. A positive integer sets this group's item limit. Blank means unlimited. Ongoing and upcoming schedules are counted separately.",
         "s7431ecb074": "Chats outside the list can use schedules and manage their own records. This does not enable interjections or proactive chat.",
         "s5a2c54f96a": "Shared by all sessions. Blank restores the default; schedule JSON is appended automatically.",
         "sfe0b615664": "Once, daily, weekly, yearly or Cron. Choose daily/weekly if unfamiliar with Cron.",
@@ -868,7 +868,7 @@
         "s84fcd70d42": "Clear",
         "sd6c2fdafe8": "Will be cleared on save",
         "s187c7323e4": "Blank: use AstrBot limits",
-        "s5fc1a82434": "inherit / number / blank for unlimited",
+        "s5fc1a82434": "inherit / 跟随全局 / count / blank for unlimited",
         "s0c9b70b61e": "Blank: unlimited",
         "se4cff5c0d2": "Follow global again",
         "s7011734430": "Calculating…",
@@ -1091,7 +1091,37 @@
         "s51d89b73e2": "Filter end date",
         "s281dbd5f95": "Dates must be between 1900 and 2199.",
         "s229f1f76a2": "End date cannot precede start date.",
-        "s911de6acea": "The bot can choose this chat or shared global schedules. This chat is the default. Set who can use the tools in AstrBot Components."
+        "s911de6acea": "The bot can choose this chat or shared global schedules. This chat is the default. Set who can use the tools in AstrBot Components.",
+        "preview_days_placeholder": "Blank: ongoing schedules only",
+        "preview_days_group_placeholder": "inherit / 跟随全局 / days / blank for ongoing only",
+        "preview_calendar_days": "{days} calendar days starting today (including ongoing schedules)",
+        "injection_title": "Schedules the bot would receive",
+        "injection_chat": "Preview chat",
+        "injection_clear": "Clear chat search",
+        "injection_sid_placeholder": "Search SID or name; enter a full SID and press Enter",
+        "injection_help": "Calculated and displayed using saved settings. If you chat with the bot now, the schedules below will be safely added to its context. This page refreshes every 5 seconds; schedules are recalculated at the time of the actual chat. Refreshing pauses while the page is in the background or settings are being saved.",
+        "injection_reason_select_session": "Choose a chat or enter its full SID to see which schedules the bot would receive.",
+        "injection_reason_plugin_disabled": "The plugin's master switch is off. This chat receives no schedule context.",
+        "injection_reason_agenda_disabled": "Schedules are disabled for this chat. No schedule context or schedule pause rules apply.",
+        "injection_reason_invalid_settings": "This chat has invalid settings. Fix the configuration messages shown on this page first.",
+        "injection_reason_outside_scope": "This chat is outside the allowed list, and schedules outside the list are disabled.",
+        "injection_reason_session_disabled": "AstrBot has disabled this plugin or the chat model for this chat, so schedule context is not provided.",
+        "injection_reason_unavailable": "The plugin is not ready to provide schedule context. Check its running status.",
+        "injection_reason_injection_disabled": "Preview days is 0, so schedules are not provided automatically. Query, management and schedule pause rules still work.",
+        "injection_reason_unsupported": "This AstrBot version does not support temporary schedule context. Update AstrBot. Schedule pause rules still work.",
+        "injection_reason_empty": "There are no schedules to provide automatically right now. The bot can still use its tools to look up other plans.",
+        "injection_days_off": "Automatic context is off",
+        "injection_no_limit": "No item limit",
+        "injection_limit": "Up to {count} ongoing and {count} upcoming schedules",
+        "injection_current": "Ongoing",
+        "injection_upcoming": "Coming up",
+        "injection_truncated": "Some schedules were omitted to respect the item limit. The bot can query its schedule tools for more.",
+        "injection_pause": "Schedule pauses",
+        "injection_pause_interjection": "Pause interjections: ",
+        "injection_pause_proactive": "Pause proactive chat: ",
+        "injection_pause_none": "No schedule pauses apply now. Routine and other limits still apply.",
+        "injection_raw": "View the full schedule context",
+        "injection_reason_invalid_session": "Enter a full chat SID or choose one from the list. Use platform_id:GroupMessage:group_id, or FriendMessage for a private chat."
       },
       "runtime": {
         "s274d480aa7": "Recent group messages may overlap native history or group context. They are reference data.",
@@ -1244,8 +1274,8 @@
         "s8f04cc0191": "Optional YYYY-MM-DD, including past dates. Defaults to now. Supplying only a past end date queries up to that day.",
         "s7f823d71cc": "Optional YYYY-MM-DD, inclusive, including past dates. Blank means no end limit. One occurrence per rule in the range.",
         "sbb0ded6a63": "Optional title/description keyword filter.",
-        "s614f5de779": "Leave blank for unlimited, or enter an integer.",
-        "sc017303ada": "Enter an integer at least {v0}, or leave blank for unlimited.",
+        "s614f5de779": "Leave blank for unlimited items, or enter an integer.",
+        "sc017303ada": "Enter an integer at least {v0}, or leave blank for unlimited items.",
         "sd6e8253014": "Enter a YYYY-MM-DD date.",
         "sd760a6a14b": "Date must be between 1900 and 2199.",
         "sc7cf982af0": "Time must use HH:MM.",
@@ -1372,7 +1402,7 @@
         "s6bc9a99588": "array",
         "s3546df7d7b": "{v0}: choose ",
         "s95944ba9dd": "Ordinary time-range schedules require: ",
-        "s175215830e": "This is a self-initiated chat opportunity, not a user task. Use the current history and persona to decide whether to speak naturally. Do not send an execution report.",
+        "s618bc66ca5": "This is a self-initiated chat opportunity, not a user task. Do not send an execution report.",
         "s405dfd8dbe": "Follow global",
         "s30160a21b9": "Yes",
         "s8bf5c10ad9": "No",
@@ -1715,7 +1745,10 @@
         "sent_timeout": "Sent; subsequent timeout: {phase}",
         "sent_failure": "Sent; subsequent failure: {phase}",
         "timeout": "Run timed out: {phase}",
-        "failure": "Run failed: {phase}"
+        "failure": "Run failed: {phase}",
+        "sb330cf10d2": "Leave blank for ongoing schedules only, or enter an integer.",
+        "s4fa0fa6fea": "Enter an integer at least {v0}, or leave blank for ongoing schedules only.",
+        "s590b0768b2": "Enter an integer at least 1, or leave blank for unlimited items."
       },
       "static": {
         "brand": "Active Conversation Console",

@@ -7,7 +7,7 @@ import copy
 import hashlib
 import json
 import time
-from .agenda import config_only, agenda_exclusions, normalize_agenda_links, event_schema, Agenda
+from .agenda import config_only, agenda_exclusions, normalize_agenda_links, event_schema, Agenda, context_text
 from .settings import Settings, shape_errors, schema
 from .prompts import placeholder_catalog
 from .diagnostics import MESSAGES, DIAGNOSTIC_ACTIONS
@@ -29,6 +29,31 @@ class PageAPI:
         self.plugin = plugin
         self.handlers = []
         self._prefs_lock = asyncio.Lock()
+        self._session_names_lock = asyncio.Lock()
+        self.session_names = {}
+
+    async def refresh_session_names(self):
+        """Read AstrBot's saved names on startup or an explicit Pages reload only."""
+        get_db = getattr(self.plugin.context, "get_db", None)
+        if not callable(get_db):
+            return
+        async with self._session_names_lock:
+            try:
+                read_aliases = getattr(get_db(), "get_umo_aliases", None)
+                if not callable(read_aliases):
+                    return
+                from astrbot.core.umo_alias import serialize_umo_alias
+                names = {}
+                for row in await read_aliases():
+                    sid = str(row.umo)
+                    name = serialize_umo_alias(row, sid)["display_name"]
+                    if name and name not in {sid, sid.split(":", 2)[-1]}:
+                        names[sid] = name
+                self.session_names = names
+            except Exception as exc:
+                # Names are presentation only; keep the last successful snapshot.
+                self.plugin.observer.error("PAGE_READ_FAILED", exc,
+                                           explanation="聊天名称读取失败，保留已有名称；不影响插件运行。")
 
     def register(self):
         for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences", "redistribute", "agenda_data", "agenda"):
@@ -49,6 +74,66 @@ class PageAPI:
         view = store.view(self.plugin.config_raw)
         return {"revision": store.revision, "config_revision": self.revision(),
                 "events": view["agenda"]["events"], "exclusions": agenda_exclusions(view)}
+
+    def _agenda_injection_preview(self, selected_sid, group_index):
+        """Project saved settings through the same session gate and formatter as injection."""
+        from astrbot.core.agent.message import TextPart
+        from .native import session_allows_plugin
+        from .sessions import split_sid
+
+        p = self.plugin
+        live = p.settings
+        known = set(p.runtime.sessions) | set(p.scopes.targets(p.runtime.sessions))
+        known.update(sid for row in live.raw["agenda"]["events"] for sid in row.get("target_sids", []))
+        if group_index >= 0:
+            owner = live.config.groups[group_index]
+            known = {sid for sid in known if p.scopes.match(sid)[1] is owner}
+        if selected_sid is None:
+            selected_sid = next(iter(sorted(known)), "")
+        if not isinstance(selected_sid, str):
+            raise ValueError("请选择完整的聊天 SID。")
+        selected_sid = selected_sid.strip()
+        result = {"sid": selected_sid, "sessions": sorted(known), "reason": "select_session",
+                  "current": [], "upcoming": [], "text": "", "truncated": False,
+                  "pause_interjection": [], "pause_proactive": [], "pause_available": False}
+        if not selected_sid:
+            return result
+        try:
+            split_sid(selected_sid)
+        except ValueError:
+            result["reason"] = "invalid_session"
+            return result
+        entry = p._entry_for(selected_sid)
+        now = p._agenda_now(selected_sid)
+        result.update(now=now.isoformat(), timezone=str(now.tzinfo),
+                      preview_days=entry.agenda.preview_days, max_items=entry.agenda.max_items)
+        if not live.config.enabled:
+            reason = "plugin_disabled"
+        elif not entry.agenda.enabled:
+            reason = "agenda_disabled"
+        elif not entry.valid("agenda"):
+            reason = "invalid_settings"
+        elif not (p.scopes.match(selected_sid)[0] or live.raw["agenda"]["outside_scope"]):
+            reason = "outside_scope"
+        elif not session_allows_plugin(p.context, selected_sid, p.PLUGIN_ID):
+            reason = "session_disabled"
+        elif not p.agenda_allowed(selected_sid):
+            reason = "unavailable"
+        else:
+            # Pause rules are independent of preview days and temporary-content support.
+            result["pause_available"] = True
+            result["pause_interjection"] = entry.agenda.blocked("interjection", now)
+            result["pause_proactive"] = entry.agenda.blocked("proactive", now)
+            snapshot = entry.agenda.snapshot(now, agent=True)
+            text = context_text(snapshot, live.raw["agenda"]["background_description"])
+            reason = ("injection_disabled" if entry.agenda.preview_days == 0 else
+                      "unsupported" if not hasattr(TextPart, "mark_as_temp") else
+                      "ready" if text else "empty")
+            if reason == "ready":
+                result.update(current=snapshot["current"], upcoming=snapshot["upcoming"],
+                              text=text, truncated=bool(snapshot.get("note")))
+        result["reason"] = reason
+        return result
 
     def _auth(self):
         from astrbot.api.web import request
@@ -99,6 +184,8 @@ class PageAPI:
     async def bootstrap(self):
         try:
             request = self._auth()
+            if str(request.query.get("refresh_names", "")).lower() == "true":
+                await self.refresh_session_names()
             preferences = await self._read_preferences(request.username)
             locale = preferences.get("language")
             set_locale = getattr(self.plugin, "set_agenda_tool_locale", None)
@@ -115,6 +202,7 @@ class PageAPI:
                 meta = provider.meta()
                 providers.append({"id":str(meta.id), "name":str(getattr(meta, "model", "") or meta.id)})
             return self._response({"config":config, "schema":metadata, "agenda_data":agenda_data,
+                                   "session_names": self.session_names,
                                    "revision":revision, "providers":providers, "errors":self.plugin.settings.blocking_errors(),
                                    "warnings":self.plugin.settings.warnings, "placeholders":placeholder_catalog(),
                                    "preferences":preferences, "translations": catalogs(),
@@ -233,8 +321,12 @@ class PageAPI:
             result["live_schedule_clock"] = {"now": datetime.now(live_tz).isoformat(), "timezone": live_timezone or str(live_tz)}
             if candidate.agenda_catalog_errors:
                 result["errors"] = {**result["errors"], "agenda_catalog": candidate.agenda_catalog_errors}
+            if data.get("injection_only") is True:
+                result["agenda_injection"] = self._agenda_injection_preview(data.get("injection_sid"), live_index)
+                return self._response(result)
             if "calendar_month" in data:
                 candidate, index, entry = live, live_index, live_entry
+                result["agenda_injection"] = self._agenda_injection_preview(data.get("injection_sid"), index)
                 from .agenda import Agenda
                 from .schedule import get_timezone
                 # The card list retains its editing scope when the calendar is

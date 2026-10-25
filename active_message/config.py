@@ -20,8 +20,8 @@ def normalize_control_values(raw: Any) -> dict:
             group.setdefault("group_name", group.pop("name"))
         for key in ("interjection_mode", "proactive_mode", "agenda_mode", "decision_mode", "agenda_preview_days", "agenda_max_items"):
             value = group.get(key)
-            if isinstance(value, str) and value in aliases:
-                group[key] = aliases[value]
+            if isinstance(value, str) and value.strip() in {*aliases, "inherit"}:
+                group[key] = aliases.get(value.strip(), value.strip())
     # Existing prompt text keeps working when redundant placeholders are retired.
     names = {"mood": "routine_state", "current_time": "now", "username": "sender_name", "user_id": "sender_id"}
     def templates(value):
@@ -165,7 +165,7 @@ class PluginConfig:
     proactive_timeout_seconds: int | None = None
     debounce_max_seconds: float = 10
     decision_max_age_seconds: float = 45
-    proactive_task_prompt: str = "这是机器人自主发起的聊天机会，不是某个用户提出的任务。结合当前会话的历史和人格决定是否自然开口。不要输出任务执行报告。"
+    proactive_task_prompt: str = "这是机器人自主发起的聊天机会，不是用户提出的任务。不要输出任务执行报告。"
 
     @classmethod
     def from_raw(cls, raw: Any) -> "PluginConfig":

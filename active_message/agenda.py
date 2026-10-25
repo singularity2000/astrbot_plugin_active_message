@@ -49,14 +49,15 @@ DEFAULT_AGENDA_DESCRIPTION = (
 
 
 def preview_number(value: Any, *, minimum: int = 0) -> int | None:
-    """Blank is unlimited; group inheritance is resolved before parsing."""
+    """Blank returns None; the caller defines its meaning for days or item limits."""
+    blank_hint = "只提供进行中的日程" if minimum == 0 else "不限制数量"
     if isinstance(value, str) and not value.strip():
         return None
     if isinstance(value, bool) or not re.fullmatch(r"\d+", str(value).strip()):
-        raise ValueError("请留空表示不限制，或填写整数。")
+        raise ValueError(f"请留空表示{blank_hint}，或填写整数。")
     number = int(str(value).strip())
     if number < minimum:
-        raise ValueError(f"请填写不小于 {minimum} 的整数，或留空表示不限制。")
+        raise ValueError(f"请填写不小于 {minimum} 的整数，或留空表示{blank_hint}。")
     return number
 
 
@@ -409,14 +410,18 @@ class Agenda:
         if not self.enabled or self.errors or (agent and self.preview_days == 0):
             return result
         latest = datetime(2200, 1, 1, tzinfo=now.tzinfo)
-        horizon = (latest if self.preview_days is None or self.preview_days >= (latest - now).days
-                   else now + timedelta(days=self.preview_days))
+        # Count local calendar days including today; blank previews only ongoing events.
+        horizon = now
+        if self.preview_days:
+            days = min(self.preview_days, (latest.date() - now.date()).days)
+            horizon = datetime.combine(now.date() + timedelta(days=days), time.min, tzinfo=now.tzinfo)
         point_end = (now.astimezone(timezone.utc) + timedelta(microseconds=1)).astimezone(now.tzinfo)
         for event in self.events:
             current = next(occurrences(event, now, point_end, 1), None)
             if current:
                 result["current"].append((event.agent_record if agent else event.record)(*current))
-            upcoming = next(occurrences(event, now, horizon, 1, future_only=True), None)
+            upcoming = (next(occurrences(event, now, horizon, 1, future_only=True), None)
+                        if horizon.timestamp() > now.timestamp() else None)
             if upcoming:
                 result["upcoming"].append((event.agent_record if agent else event.record)(*upcoming))
         for key in ("current", "upcoming"):
@@ -427,7 +432,7 @@ class Agenda:
         if agent:
             result.pop("enabled")
             truncated = result.pop("truncated")
-            result["preview_days"] = self.preview_days if self.preview_days is not None else "不限"
+            result["preview_days"] = self.preview_days if self.preview_days is not None else "仅进行中"
             if truncated:
                 result["note"] = "已按注入条数上限省略部分安排，可使用 query_schedule 查询。"
         return result

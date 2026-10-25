@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.6.3"
+PLUGIN_VERSION = "1.7.0"
 
 import asyncio
 import copy
@@ -425,6 +425,7 @@ class ActiveMessagePlugin(Star):
                           groups=len(self.plugin_config.groups))
         from .active_message.web import PageAPI
         self.page_api = PageAPI(self)
+        await self.page_api.refresh_session_names()
         self.page_api.register()
         await self._start_scheduler()
 
