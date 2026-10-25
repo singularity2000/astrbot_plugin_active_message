@@ -21,6 +21,8 @@
   --rail-bg:#f3f6fa;
   --input-bg:#fbfcfe;
   --popup-shadow:0 12px 36px rgba(32,49,74,.16);
+  --dock-bg:#eef5ff;
+  --dock-shadow:0 -10px 32px rgba(32,49,74,.22),0 3px 10px rgba(32,49,74,.14);
   --teal:#167b80;
   --warning:#8b5a11;
   --warning-bg:#fff5df;
@@ -56,6 +58,8 @@
   --rail-bg:#1d2635;
   --input-bg:#1c2533;
   --popup-shadow:0 12px 36px rgba(0,0,0,.32);
+  --dock-bg:#27394f;
+  --dock-shadow:0 -12px 36px rgba(0,0,0,.48),0 3px 12px rgba(0,0,0,.32);
   --teal:#82d8cf;
   --warning:#ffcf83;
   --warning-bg:#493b28;
@@ -1141,14 +1145,15 @@ footer {
 .dragging { opacity:.5; }
 .drop-target { outline:2px dashed var(--accent); outline-offset:3px; }
 /* The dock is a temporary tool surface, not another configuration section. */
-.placeholder-dock { position:fixed; z-index:40; left:calc(var(--rail-width) + 22px); right:22px; bottom:12px; padding:12px; background:var(--surface); border:1px solid var(--accent); border-radius:4px; box-shadow:0 -3px 22px #0002; }
-.dock-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
-.dock-head strong { flex:1; font-size:13px; }
+.placeholder-dock { position:fixed; z-index:40; left:calc(var(--rail-width) + 22px); right:22px; bottom:12px; padding:12px; background:var(--dock-bg); border:1px solid var(--accent); border-top-width:3px; border-radius:7px; box-shadow:var(--dock-shadow); }
+.dock-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+.dock-head strong { flex:1; font-size:13px; color:var(--accent); }
 .dock-head input { width:230px; }
 .dock-items { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr)); gap:6px; max-height:174px; overflow-y:auto; overscroll-behavior:contain; }
 .dock-token { text-align:left; display:flex; flex-direction:column; gap:3px; padding:7px 10px; }
+.dock-token:hover:not(:disabled),.dock-token:focus-visible { background:var(--accent-soft); border-color:var(--accent); }
 .dock-token code { color:var(--accent); font-size:12px; }
-.dock-token span { color:var(--muted); font-size:12px; line-height:1.45; }
+.dock-token span { color:var(--text); font-size:12px; line-height:1.45; }
 textarea,input { scroll-margin-bottom:calc(var(--dock-height) + 24px); }
 /* Schedules: compact editable list; calendar is strictly a read-only projection. */
 /* Keep cards at least 300px wide when possible; the third-width floor caps the grid at three columns (two 12px gaps). */
@@ -1521,7 +1526,7 @@ tr:has(td):hover { background:var(--surface-2); }
 footer { margin:0; padding:16px 20px 22px; background:var(--surface); }
 #notice { margin:0; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--surface-2); }
 .validation-summary { border-radius:0; border-width:0 0 1px 3px; padding:16px 20px; }
-.modal,.help-popup,.placeholder-dock { box-shadow:var(--popup-shadow); border-color:var(--line-strong); }
+.modal,.help-popup { box-shadow:var(--popup-shadow); border-color:var(--line-strong); }
 .modal { border-radius:10px; }
 .help-popup,.placeholder-dock { border-radius:7px; }
 .tag,.override-badge { border-radius:4px; }

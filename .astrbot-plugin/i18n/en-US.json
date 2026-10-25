@@ -2159,6 +2159,16 @@
       "action": "",
       "tab": null
     },
+    "PROACTIVE_HISTORY_SAVED": {
+      "message": "Sent content was saved to the original conversation as a regular assistant message.",
+      "action": "",
+      "tab": null
+    },
+    "PROACTIVE_HISTORY_FAILED": {
+      "message": "The message was sent, but saving it to conversation history failed. Check the error details below.",
+      "action": "",
+      "tab": null
+    },
     "PROACTIVE_QUOTA_USED": {
       "message": "Completed without sending and consumed one proactive attempt. Sending cooldown and unanswered count are unchanged.",
       "action": "",

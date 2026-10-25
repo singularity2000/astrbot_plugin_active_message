@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.6.2"
+PLUGIN_VERSION = "1.6.3"
 
 import asyncio
 import copy
@@ -31,7 +31,7 @@ from .active_message.context_input import ContextUnavailable, group_history_limi
 from .active_message.settings import Settings
 from .active_message.text_context import text_only
 from .active_message.diagnostics import MESSAGES, Observability, TraceStore
-from .active_message.proactive import NativeAgentError, RunProgress, run_proactive_agent
+from .active_message.proactive import NativeAgentError, RunProgress, persist_proactive_message, run_proactive_agent
 from .active_message.decisions import DecisionClient, DecisionError
 from .active_message.models import DecisionResult, MessageObservation
 from .active_message.native import (
@@ -795,14 +795,23 @@ class ActiveMessagePlugin(Star):
         target = str((tool_args or {}).get("session") or sid)
         if target != sid:
             return
-        await self._record_sent(event, f"tool:{id(event)}:{event.get_extra('_active_message_send_seq', 0)}")
+        key = f"tool:{id(event)}:{event.get_extra('_active_message_send_seq', 0)}"
+        try:
+            await self._record_sent(event, key)
+        finally:
+            # Keep confirmed content even if later state persistence is cancelled.
+            await persist_proactive_message(self, event, key, (tool_args or {}).get("messages", []))
 
     @filter.after_message_sent()
     async def after_message_sent(self, event: AstrMessageEvent) -> None:
         result = event.get_result()
         if result is None or not getattr(result, "chain", None):
             return
-        await self._record_sent(event, f"final:{id(event)}")
+        key = f"final:{id(event)}"
+        try:
+            await self._record_sent(event, key)
+        finally:
+            await persist_proactive_message(self, event, key, result.get_plain_text(with_other_comps_mark=True))
 
     async def _record_sent(self, event: AstrMessageEvent, key: str) -> None:
         sid = event.unified_msg_origin

@@ -7,14 +7,14 @@ import json
 import asyncio
 import time
 from typing import Any
-from .native import session_allows_plugin
+from .native import session_allows_plugin, tool_response_text
 from .prompts import render_template
 from .diagnostics import exception_details
 
 
 async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> None:
-    # Follow CronJobManager._woke_main_agent for request construction, tools,
-    # execution and persistence. Keep scheduling/diagnostics local to this run.
+    # Follow CronJobManager._woke_main_agent for request construction, tools
+    # and execution. Only delivered messages belong in chat history.
     from astrbot.core.agent.tool import ToolSet
     from astrbot.core.astr_main_agent import MainAgentBuildConfig, _get_session_conv, build_main_agent
     from astrbot.core.astr_main_agent_resources import (
@@ -27,7 +27,6 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
     from astrbot.core.star.session_llm_manager import SessionServiceManager
     from astrbot.core.tools.message_tools import SendMessageToUserTool
     from astrbot.core.utils.config_number import coerce_int_config
-    from astrbot.core.utils.history_saver import persist_agent_history
     from astrbot.core.utils.session_lock import session_lock_manager
 
     config = plugin._config_for(sid)
@@ -121,6 +120,7 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
             plugin.observer.log("warning", "PROACTIVE_AGENT_BUILD_FAILED", sid=sid, run_id=meta["run_id"])
             return
         runner = result.agent_runner
+        meta["history_conversation_id"] = getattr(result.provider_request.conversation, "cid", None)
         reset = result.reset_coro
         try:
             # Native future tasks go straight from build to the runner. Do not
@@ -136,24 +136,16 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
                 progress.enter("reset")
                 await reset
                 reset = None
-            observe_runner(runner, progress)
+            observe_runner(runner, progress, plugin=plugin)
             plugin.runtime.get(sid).agent_active = True
             plugin.observer.log("debug", "AGENT_STARTED", sid=sid, run_id=meta["run_id"], role="member", trigger_type="主动聊天")
             progress.enter("agent")
             async for _ in runner.step_until_done(max_steps):
                 pass
-            response = runner.get_final_llm_resp()
             if getattr(getattr(runner, "state", None), "name", "") == "ERROR":
                 raise NativeAgentError("NATIVE_AGENT_ERROR")
             if getattr(getattr(runner, "state", None), "name", "") != "DONE":
                 raise NativeAgentError("NATIVE_AGENT_NOT_COMPLETED")
-            summary = (f"[CronJob] {cron_meta['name']}: {cron_meta['description']} "
-                       f" triggered at {cron_meta['run_started_at']}, ")
-            if response and response.role == "assistant":
-                summary += f"I finished this job, here is the result: {response.completion_text}"
-            progress.enter("history")
-            await persist_agent_history(context.conversation_manager, event=event, req=result.provider_request, summary_note=summary)
-            plugin.traces.add(meta["run_id"], "主动任务历史已交由原生接口保存", {"conversation_id":getattr(conversation,"cid",None)})
             progress.sent = progress.sent or event.get_extra("_active_message_sent", False)
             if not progress.sent:
                 plugin.observer.log("debug", "PROACTIVE_NO_SEND", sid=sid, run_id=meta["run_id"])
@@ -182,6 +174,57 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
                         for task in remaining:
                             task.add_done_callback(forget)
                     plugin.runtime.get(sid).agent_active = False
+
+
+async def persist_proactive_message(
+    plugin: Any, event: Any, key: str, content: str | list[dict[str, Any]],
+) -> None:
+    """Append confirmed delivery to the bound conversation, never a task report."""
+    meta = event.get_extra("_active_message_meta", {})
+    if (meta.get("plugin") != plugin.PLUGIN_ID or meta.get("trigger_type") != "主动聊天"
+            or not meta.get("history_conversation_id")):
+        return
+    from astrbot.core.agent.message import AssistantMessageSegment, TextPart
+
+    if isinstance(content, list):
+        # Match native path-free message history: text plus objective media marks.
+        marks = {"image": "[Image]", "record": "[Record]", "video": "[Video]",
+                 "file": "[File]", "mention_user": "[At]"}
+        parts = []
+        for component in content:
+            if not isinstance(component, dict):
+                continue
+            kind = str(component.get("type", "")).lower()
+            text = str(component.get("text", "")).strip() if kind == "plain" else marks.get(kind, "")
+            if text:
+                parts.append(text)
+        content = " ".join(parts)
+    if not isinstance(content, str) or not content:
+        return
+    sid, cid = event.unified_msg_origin, meta["history_conversation_id"]
+    # The caller already owns the session lock. Serialize callbacks within this
+    # run too, and bind writes to its original branch rather than a new selection.
+    async with meta.setdefault("history_lock", asyncio.Lock()):
+        saved = meta.setdefault("history_saved", set())
+        if key in saved:
+            return
+        try:
+            manager = plugin.context.conversation_manager
+            conversation = await manager.get_conversation(sid, cid)
+            if conversation is None:
+                raise ValueError("proactive conversation no longer exists")
+            history = json.loads(conversation.history or "[]")
+            if not isinstance(history, list):
+                raise ValueError("conversation history must be a list")
+            history.append(
+                AssistantMessageSegment(content=[TextPart(text=content)]).model_dump()
+            )
+            await manager.update_conversation(sid, cid, history=history)
+            saved.add(key)
+            plugin.observer.log("debug", "PROACTIVE_HISTORY_SAVED", sid=sid, run_id=meta["run_id"], conversation_id=cid)
+        except Exception as exc:
+            # Delivery already succeeded; a storage failure must not retry a send.
+            plugin.observer.error("PROACTIVE_HISTORY_FAILED", exc, sid=sid, run_id=meta["run_id"])
 
 
 PHASES = catalog()["phases"]
@@ -338,6 +381,10 @@ class _ObservedContext(_Delegate):
 
 
 class _ObservedExecutor(_Delegate):
+    def __init__(self, original: Any, progress: RunProgress, plugin: Any = None) -> None:
+        super().__init__(original, progress)
+        self.plugin = plugin
+
     async def execute(self, *args: Any, **kwargs: Any):
         p = self.progress
         p.check_deadline()
@@ -353,6 +400,18 @@ class _ObservedExecutor(_Delegate):
                     p.active_tools.add(task)
                 try:
                     response = await anext(iterator)
+                    # Retain delivery before a deadline or cancellation can
+                    # prevent the native result hooks from processing it.
+                    if self.plugin is not None and name == "send_message_to_user" and not getattr(response, "isError", False):
+                        run_context = kwargs.get("run_context", args[1] if len(args) > 1 else None)
+                        event = run_context.context.event
+                        receipt = "Message sent to session " + event.unified_msg_origin
+                        if tool_response_text(response).strip() == receipt:
+                            key = f"tool:{id(event)}:{event.get_extra('_active_message_send_seq', 0)}"
+                            try:
+                                await self.plugin._record_sent(event, key)
+                            finally:
+                                await persist_proactive_message(self.plugin, event, key, kwargs.get("messages", []))
                 except StopAsyncIteration:
                     break
                 finally:
@@ -406,7 +465,7 @@ class _ObservedHooks(_Delegate):
         await self._call("on_tool_end", *args)
 
 
-def observe_runner(runner: Any, progress: RunProgress) -> None:
+def observe_runner(runner: Any, progress: RunProgress, *, plugin: Any = None) -> None:
     """Native local runner adapter, verified against AstrBot v4.28.2.
 
     The proactive adapter explicitly disables streaming. Provider-level calls
@@ -420,6 +479,6 @@ def observe_runner(runner: Any, progress: RunProgress) -> None:
     if getattr(runner, "request_context_manager", None) is not None:
         runner.request_context_manager = _ObservedContext(runner.request_context_manager, progress)
     if getattr(runner, "tool_executor", None) is not None:
-        runner.tool_executor = _ObservedExecutor(runner.tool_executor, progress)
+        runner.tool_executor = _ObservedExecutor(runner.tool_executor, progress, plugin)
     if getattr(runner, "agent_hooks", None) is not None:
         runner.agent_hooks = _ObservedHooks(runner.agent_hooks, progress)

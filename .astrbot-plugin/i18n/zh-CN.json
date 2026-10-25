@@ -2159,6 +2159,16 @@
       "action": "",
       "tab": null
     },
+    "PROACTIVE_HISTORY_SAVED": {
+      "message": "已发送内容已作为普通机器人消息记入原会话。",
+      "action": "",
+      "tab": null
+    },
+    "PROACTIVE_HISTORY_FAILED": {
+      "message": "消息已发送，但写入原会话历史失败；请检查下方异常信息。",
+      "action": "",
+      "tab": null
+    },
     "PROACTIVE_QUOTA_USED": {
       "message": "本轮正常完成但未发送，已消耗一次主动尝试额度；发言冷却和无人回复数不变。",
       "action": "",
