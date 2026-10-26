@@ -56,11 +56,11 @@ class PageAPI:
                                            explanation="聊天名称读取失败，保留已有名称；不影响插件运行。")
 
     def register(self):
-        for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences", "redistribute", "agenda_data", "agenda"):
+        for name in ("bootstrap", "status", "trace", "settings", "preview", "preferences", "redistribute", "trigger_proactive", "agenda_data", "agenda"):
             handler = getattr(self, name)
             self.handlers.append(handler)
             self.plugin.context.register_web_api(f"/{self.plugin.PLUGIN_ID}/{name}", handler,
-                ["POST"] if name in {"settings", "preview", "preferences", "redistribute", "agenda"} else ["GET"], "主动会话控制台")
+                ["POST"] if name in {"settings", "preview", "preferences", "redistribute", "trigger_proactive", "agenda"} else ["GET"], "主动会话控制台")
 
     def unregister(self):
         registry = self.plugin.context.registered_web_apis
@@ -246,6 +246,7 @@ class PageAPI:
                     "schedule":state.proactive_schedule if scheduled and sid == schedule_sid and state.proactive_schedule_date == today else [],
                     "schedule_timezone":str(now.tzinfo),
                     "reallocation":p.proactive_reallocation(sid) if sid == schedule_sid else None,
+                    "manual_trigger": {"reason": p.proactive_test_block_reason(sid)} if sid == schedule_sid else None,
                     "latest":p.observer.latest.get(sid),
                     "results":p.traces.latest_results.get(sid, {}), "errors":entry.errors})
             errors = p.settings.blocking_errors()
@@ -398,6 +399,27 @@ class PageAPI:
         except Exception as exc:
             self.plugin.observer.error("PROACTIVE_REALLOCATION_FAILED", exc)
             return self._response(error="重新分配未完成，请刷新确认当前预约，并检查插件日志。")
+
+    async def trigger_proactive(self):
+        data = {}
+        try:
+            data = await self._body()
+            sid = data.get("sid")
+            if not isinstance(sid, str):
+                raise ValueError("请选择完整的聊天 SID。")
+            from .sessions import split_sid
+            split_sid(sid)
+            async with self.plugin._settings_lock:
+                await self.plugin.agenda_store.check_current()
+                if data.get("revision") != self.revision():
+                    raise ValueError("设置已经变更，请重新载入后再测试。")
+                result = await self.plugin.trigger_proactive(sid)
+            return self._response(result)
+        except (ValueError, PermissionError) as exc:
+            return self._response(error=str(exc))
+        except Exception as exc:
+            self.plugin.observer.error("PROACTIVE_TEST_START_FAILED", exc, sid=data.get("sid"))
+            return self._response(error="启动结果未确认，请先刷新状态及决策回放，勿重复点击。")
 
     async def settings(self):
         try:

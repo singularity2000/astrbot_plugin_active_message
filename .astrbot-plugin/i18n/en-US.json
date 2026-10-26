@@ -90,7 +90,7 @@
         },
         "prompt": {
           "description": "Judgment prompt",
-          "hint": "Tell the model when the bot should join. Keep defaults if unsure. Supports {persona_prompt}, {conversation_history}, {recent_messages}, {activity_score}, {energy_score} and other placeholders."
+          "hint": "Write judgment rules and background placeholders here for LLM or Jev. Use {persona_prompt} for persona and {ai_last_sent_time} for the last bot message time. The current message, selected history, recent group messages and existing image descriptions are attached automatically; history placeholders are usually unnecessary. Judge whether to join, without writing a chat reply."
         },
         "timeout_seconds": {
           "description": "Judgment request timeout (seconds)",
@@ -107,10 +107,6 @@
         "jev_model": {
           "description": "Jev model name",
           "hint": "A model supported by the endpoint; default jev-latest. For proxies, use a model name supported by that service."
-        },
-        "jev_state_template": {
-          "description": "Supplemental judgment template (LLM/Jev)",
-          "hint": "Extra background for judgment. Current input, selected history, group messages and existing image descriptions are appended automatically. History placeholders are usually unnecessary and may duplicate data. This does not modify the reply agent."
         },
         "retry_attempts": {
           "description": "Temporary failure retries",
@@ -161,7 +157,7 @@
       },
       "task_prompt": {
         "description": "Proactive task instructions",
-        "hint": "Describe this proactive opportunity. Combined with the selected prompt variant as the native future-task description; the native Agent decides whether to send and how to continue."
+        "hint": "Describe this proactive opportunity, combined with the selected prompt variant for the original session Agent. On the final send_message_to_user call, set finish_after_send=true to finish after successful delivery and completion of the current tool batch, without a summary model request. Otherwise the Agent may continue or choose not to send."
       }
     },
     "context": {
@@ -329,7 +325,7 @@
             },
             "task_prompt": {
               "description": "Proactive task instructions",
-              "hint": "Blank inherits globally; a value overrides this group only. Describe this proactive opportunity. Combined with the selected prompt variant as the native future-task description; the native Agent decides whether to send and how to continue."
+              "hint": "Leave blank to inherit globally; otherwise apply only to this group. Describe this proactive opportunity, combined with the selected prompt variant for the original session Agent. On the final send_message_to_user call, set finish_after_send=true to finish after successful delivery and completion of the current tool batch, without a summary model request. Otherwise the Agent may continue or choose not to send."
             }
           },
           "context_overrides": {
@@ -368,11 +364,7 @@
             "description": "Group judgment prompt",
             "prompt": {
               "description": "Judgment prompt",
-              "hint": "Blank follows global. Guide when the bot should join. Defaults are recommended if unsure. Supports {persona_prompt}, {conversation_history}, {recent_messages}, {activity_score} and {energy_score}."
-            },
-            "jev_state_template": {
-              "description": "Supplemental judgment template (LLM/Jev)",
-              "hint": "Blank follows global; overrides apply only to this group. Extra background for judgment. Current input, selected history, group messages and existing image descriptions are appended automatically. History placeholders are usually unnecessary and may duplicate data. This does not modify the reply agent."
+              "hint": "Leave blank to inherit globally; otherwise apply only to this group. Write judgment rules and background placeholders here for LLM or Jev. Use {persona_prompt} for persona and {ai_last_sent_time} for the last bot message time. The current message, selected history, recent group messages and existing image descriptions are attached automatically; history placeholders are usually unnecessary. Judge whether to join, without writing a chat reply."
             }
           },
           "agenda_mode": {
@@ -1121,7 +1113,19 @@
         "injection_pause_proactive": "Pause proactive chat: ",
         "injection_pause_none": "No schedule pauses apply now. Routine and other limits still apply.",
         "injection_raw": "View the full schedule context",
-        "injection_reason_invalid_session": "Enter a full chat SID or choose one from the list. Use platform_id:GroupMessage:group_id, or FriendMessage for a private chat."
+        "injection_reason_invalid_session": "Enter a full chat SID or choose one from the list. Use platform_id:GroupMessage:group_id, or FriendMessage for a private chat.",
+        "proactive_test_title": "Trigger proactive chat now",
+        "proactive_test_session": "Test session",
+        "proactive_test_label": "Manual test",
+        "proactive_test_pending": "Confirming or starting the manual test…",
+        "proactive_test_confirm": "Start one proactive chat test now in {session}.\n\nThis uses the session’s saved settings and prompts. It may send real messages and incur model costs, or the model may choose to stay quiet.\n\nThis test bypasses the random schedule, sleep, agenda pauses, cooldown and daily quota. It does not use the normal quota or resample existing slots.",
+        "proactive_test_unsaved": "There are unsaved changes. This test uses the saved settings.",
+        "proactive_test_start": "Start test",
+        "proactive_test_started": "Proactive chat started.",
+        "proactive_test_view": "View this decision replay",
+        "proactive_test_refresh_failed": "The task started, but the status refresh failed: {error}",
+        "schedule_choose_session": "Choose a session first.",
+        "schedule_reallocation_saved": "Resampled {count} opportunities."
       },
       "runtime": {
         "s274d480aa7": "Recent group messages may overlap native history or group context. They are reference data.",
@@ -1748,7 +1752,20 @@
         "failure": "Run failed: {phase}",
         "sb330cf10d2": "Leave blank for ongoing schedules only, or enter an integer.",
         "s4fa0fa6fea": "Enter an integer at least {v0}, or leave blank for ongoing schedules only.",
-        "s590b0768b2": "Enter an integer at least 1, or leave blank for unlimited items."
+        "s590b0768b2": "Enter an integer at least 1, or leave blank for unlimited items.",
+        "sf8be8c7c2c": "Program completion",
+        "sc21572032a": "Proactive chat request (not the final network payload)",
+        "sad1c58f52e": "Final message delivered; completing the conversation",
+        "sf8addaf574": "Delivered; run ended, but chat history could not be saved",
+        "s8f02b195c9": "Delivered; still processing",
+        "proactive_silence": "Chose not to send",
+        "proactive_silence_complete": "Chose not to send; finalizing the run",
+        "manual_test_start": "Proactive chat triggered manually from Pages",
+        "manual_test_explanation": "This test bypasses scheduling, sleep, agenda pauses, cooldown and daily quota; it does not use the normal quota or resample slots.",
+        "manual_test_changed": "Settings have changed. Reload before testing.",
+        "manual_test_unknown": "The start result is unconfirmed. Refresh status and decision replay before trying again.",
+        "manual_test_runner": "Unsupported Agent type. Use the framework’s built-in local assistant.",
+        "manual_test_llm_disabled": "LLM is disabled for this session."
       },
       "static": {
         "brand": "Active Conversation Console",
@@ -2356,6 +2373,11 @@
       "message": "Ignored an empty configuration intent left by an earlier failure. Existing schedules and configuration restored.",
       "action": "",
       "tab": null
+    },
+    "PROACTIVE_TEST_START_FAILED": {
+      "message": "The start result is unconfirmed. Refresh status and decision replay before trying again.",
+      "action": "",
+      "tab": "traces"
     }
   },
   "tools": {

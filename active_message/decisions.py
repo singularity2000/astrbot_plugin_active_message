@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from .config import DecisionConfig
 from .models import DecisionResult
-from .prompts import render_system_template, render_template, validate_template
+from .prompts import render_system_template, validate_template
 from .text_context import dumps, drop_oldest, estimate_tokens, over_budget, text_only
 
 
@@ -80,7 +80,6 @@ def validate_jev_endpoint(endpoint: str) -> str:
 def prepare_request(config: DecisionConfig, values: dict) -> tuple[str, str, dict]:
     """Fit the final rendered request, including repeated custom placeholders."""
     validate_template(config.prompt, decision=True)
-    validate_template(config.jev_state_template, decision=True)
     values = copy.deepcopy(values)
     payload = values.get("_context_payload", {})
     removed = 0
@@ -92,8 +91,7 @@ def prepare_request(config: DecisionConfig, values: dict) -> tuple[str, str, dic
         instructions = text_only(instructions)
         if config.mode == "llm":
             instructions += '\n仅输出 JSON 对象：{"score": 0 到 1 的数字, "reason": "简短理由"}。不要使用工具，不生成聊天回复。'
-        state = dumps({"supplement": text_only(render_template(config.jev_state_template, values)),
-                       "template_references": references, "current_message": values.get("current_message", ""),
+        state = dumps({"template_references": references, "current_message": values.get("current_message", ""),
                        "context": payload})
         combined = instructions + "\n" + state
         metrics = {"input_chars": len(combined), "input_bytes": len(combined.encode("utf-8")),

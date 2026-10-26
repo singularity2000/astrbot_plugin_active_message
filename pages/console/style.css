@@ -1372,10 +1372,33 @@ main { padding:14px 18px 24px; overflow-anchor:none; }
 .schedule-legend>small { color:var(--muted); }
 .schedule-footer { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:8px 16px; }
 .schedule-footer>.schedule-legend { flex:1 1 400px; min-width:0; padding-top:5px; }
-.schedule-reallocation { flex:0 1 290px; min-width:0; margin-left:auto; text-align:right; }
-.schedule-reallocation>button { white-space:nowrap; }
+.schedule-reallocation { flex:0 1 auto; min-width:0; max-width:100%; margin-left:auto; text-align:right; }
+.schedule-buttons { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; }
+.schedule-buttons>button { white-space:nowrap; }
 .schedule-reallocation>small { margin-top:3px; }
+.schedule-action-feedback { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:0 6px; }
+.schedule-action-feedback>.result-link { min-height:20px; padding:0; }
+.proactive-test-bar { grid-column:1/-1; min-width:0; padding:6px 0; }
+.proactive-settings.settings-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.proactive-settings.settings-grid>.proactive-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-content:start; align-items:start; gap:12px 24px; padding:10px 0; border-top:2px solid var(--line); }
+.proactive-actions>.proactive-test-bar { grid-column:auto; padding:0; }
+.proactive-actions>.shared-cooldown-link { margin:0; }
+.proactive-test-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; }
+.proactive-test-toolbar>label { display:flex; align-items:center; gap:8px; flex:1 1 190px; min-width:0; font-size:12px; white-space:nowrap; }
+.proactive-test-toolbar select { flex:1; width:0; min-width:0; font-size:12px; padding:6px 8px; }
+.proactive-test-toolbar>button { flex:0 0 auto; white-space:nowrap; }
+.proactive-test-bar>.schedule-action-feedback { justify-content:flex-start; margin-top:3px; }
+.shared-cooldown-link { margin:6px 0 0; gap:6px; }
+.shared-cooldown-link>small { flex:1 1 190px; }
+@media(min-width:1280px) {
+  .proactive-settings.settings-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .proactive-settings.settings-grid>.proactive-actions { grid-column:auto; grid-template-columns:minmax(0,1fr); gap:16px; }
+}
 @media(max-width:700px) {
+  .proactive-settings.settings-grid { grid-template-columns:minmax(0,1fr); }
+  .proactive-settings.settings-grid>.proactive-actions { grid-template-columns:minmax(0,1fr); }
+  .proactive-test-toolbar { justify-content:flex-end; }
+  .proactive-test-toolbar>label { flex-basis:100%; }
   main { padding:10px 12px 20px; }
   .section { padding:12px; margin-bottom:8px; }
   .trace-filter-checks { gap:8px 12px; }

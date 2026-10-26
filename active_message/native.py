@@ -79,3 +79,9 @@ def tool_response_text(result: Any) -> str:
     if isinstance(parts, list):
         return "\n".join(str(getattr(part, "text", "")) for part in parts)
     return ""
+
+
+def confirmed_current_session_send(event: Any, result: Any) -> bool:
+    """Trust the native resolved target receipt, never just the tool invocation."""
+    return (not getattr(result, "isError", False)
+            and tool_response_text(result).strip() == "Message sent to session " + event.unified_msg_origin)

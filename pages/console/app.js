@@ -57,14 +57,14 @@
       if(groups.length&&runs.some(r=>groupIndex(r)===null))options.push(['ungrouped',t("pages.console.ui.sae6e3be564")]);
       const optionKey=JSON.stringify(options);
       if(groupSelect.dataset.options!==optionKey){groupSelect.replaceChildren(...options.map(([value,text])=>new Option(text,value)));groupSelect.dataset.options=optionKey;if(!options.some(([key])=>key===filters.group))filters.group='';groupSelect.value=filters.group;}
-      const matching=runs.filter(matches),signature=JSON.stringify(matching.map(r=>[r.run_id,r.status,r.kind,r.created_at]));
+      const matching=runs.filter(matches),signature=JSON.stringify(matching.map(r=>[r.run_id,r.status,r.kind,r.source,r.created_at]));
       if(state.run&&!matching.some(run=>run.run_id===state.run.run_id)){
         state.traceSeq++;state.run=null;state.step=0;drawTrace();
       }
       summary.textContent=t("pages.console.ui.scb3a43eea3")+matching.length+' / '+runs.length+t("pages.console.ui.sa0cd378be4");
       if(force||signature!==renderedIds){
         const scroll=list.scrollTop,buttons=matching.map(run=>{
-          const b=el('button',(run.kind==='proactive'?t("pages.console.ui.s5e6f228dbe"):run.kind==='interjection'?t("pages.console.ui.s5453160ded"):run.kind==='ordinary'?t("pages.console.ui.s91a31123dd"):t("pages.console.ui.s98fcd3ca25"))+' · '+window.ActiveMessageI18n.runtime(run.status),'trace-item');b.dataset.runId=run.run_id;b.append(el('small',S(run.sid)),el('small',new Date(run.created_at*1000).toLocaleString(window.ActiveMessageI18n.getLocale())));
+          const b=el('button',(run.kind==='proactive'?t("pages.console.ui.s5e6f228dbe"):run.kind==='interjection'?t("pages.console.ui.s5453160ded"):run.kind==='ordinary'?t("pages.console.ui.s91a31123dd"):t("pages.console.ui.s98fcd3ca25"))+(run.source==='manual_test'?' · '+t('pages.console.ui.proactive_test_label'):'')+' · '+window.ActiveMessageI18n.runtime(run.status),'trace-item');b.dataset.runId=run.run_id;b.append(el('small',S(run.sid)),el('small',new Date(run.created_at*1000).toLocaleString(window.ActiveMessageI18n.getLocale())));
           b.onclick=async()=>{const seq=++state.traceSeq;try{const value=await api('trace',undefined,{run_id:run.run_id});if(seq!==state.traceSeq||state.tab!=='traces')return;const current=(state.status?.runs||[]).find(r=>r.run_id===run.run_id);if(!current||!matches(current))return;state.run=value;state.step=0;highlight();drawTrace();}catch(e){if(seq===state.traceSeq)fail(e);}};return b;
         });
         list.replaceChildren(...buttons);if(!matching.length)list.append(el('p',runs.length?t("pages.console.ui.s856890ff55"):t("pages.console.ui.sb329eb6906"),'empty'));list.scrollTop=scroll;renderedIds=signature;
@@ -72,7 +72,23 @@
       highlight();
     }
     function highlight(){list.querySelectorAll('[data-run-id]').forEach(b=>b.classList.toggle('active',b.dataset.runId===state.run?.run_id));}
-    return {update,restore(){
+    return {update,async open(runId){
+      const seq=++state.traceSeq,run=await api('trace',undefined,{run_id:runId});
+      if(seq!==state.traceSeq)return;
+      try{if(statusPending)await statusPending;await refreshStatus(false);}catch{
+        // The trace was read successfully; a failed status refresh must not
+        // prevent opening it. Use that actual trace as the list summary.
+      }
+      if(seq!==state.traceSeq)return;
+      if(!(state.status?.runs||[]).some(item=>item.run_id===runId)){
+        const {steps,...summary}=run;
+        state.status={...(state.status||{}),runs:[summary,...(state.status?.runs||[])]};
+      }
+      // Explicit navigation must reveal this run even if old filters hide it.
+      filters.group='';filters.sid=run.sid;filters.minutes=0;filters.kinds.add(run.kind||'other');
+      filters.results=new Set(['running','sent','quiet','error']);
+      state.run=run;state.step=0;selectTab('traces');save();
+    },restore(){
       const p=state.preferences;
       if(typeof p.trace_group==='string')filters.group=p.trace_group;
       if(typeof p.trace_sid==='string')filters.sid=p.trace_sid;
@@ -95,7 +111,8 @@
 
   /* 按真实分钟划分作息色段；当前时间使用服务端预览时区。 */
   function createScheduleStrip({state,el}) {
-    let clock=null,receivedAt=0,selectedSid='',scopeKey='',renderedDate='',selectedAt='',reallocating=false;
+    let clock=null,receivedAt=0,renderedDate='',selectedAt='',reallocating=false,triggering=false;
+    const selections={schedule:{sid:'',scope:''},test:{sid:'',scope:''}},lastActions={schedule:null,test:null};
     const statuses=()=>({pending:t("pages.console.ui.sc4804ff109"),running:t("pages.console.ui.s6f1972e48e"),sent:t("pages.console.ui.safb62932a7"),quiet:t("pages.console.ui.s2050f3bc00"),failed:t("pages.console.ui.sb61b08aec3"),skipped:t("pages.console.ui.s9f38afd41e"),missed:t("pages.console.ui.sf1d0e1ac37")});
     function ranges(spec){return (spec||'').split(',').filter(p=>p.trim()).map(part=>{const clocks=part.trim().split('-');if(clocks.length!==2)throw Error();return clocks.map(t=>{if(!/^\d{1,2}:\d{2}$/.test(t.trim()))throw Error();const [h,m]=t.trim().split(':').map(Number);if(h>23||m>59)throw Error();return h*60+m;});});}
     const format=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(Math.floor(m%60)).padStart(2,'0');
@@ -104,37 +121,81 @@
       catch{const offset=/([+-])(\d{2}):(\d{2})$/.exec(clock?.now||''),mins=offset?(Number(offset[2])*60+Number(offset[3]))*(offset[1]==='-'?-1:1):0,local=new Date(date.getTime()+mins*60000);return {day:local.toISOString().slice(0,10),minute:local.getUTCHours()*60+local.getUTCMinutes()+local.getUTCSeconds()/60};}
     }
     function current(){return new Date(Date.parse(clock?.now||new Date().toISOString())+Date.now()-receivedAt);}
-    function sessions(){const group=state.scope>=0?state.config.session_groups[state.scope]:null;return (state.status?.sessions||[]).filter(s=>s.matched&&(group?!!group.agenda_id&&s.group_id===group.agenda_id:s.group_id==null));}
+    function sessions(kind){const group=state.scope>=0?state.config.session_groups[state.scope]:null;return (state.status?.sessions||[]).filter(s=>s.matched&&(group?!!group.agenda_id&&s.group_id===group.agenda_id:kind==='test'||s.group_id==null));}
+    function selection(kind=state.tab==='proactive'?'test':'schedule'){
+      const group=state.scope>=0?state.config.session_groups[state.scope]:null,target=selections[kind],scope=group?group.agenda_id||'draft':'global',options=sessions(kind);
+      if(target.scope!==scope){target.scope=scope;target.sid='';}
+      if(!options.some(s=>s.sid===target.sid))target.sid=options[0]?.sid||'';
+      return {options,selected:options.find(s=>s.sid===target.sid),sid:target.sid};
+    }
     function reallocationState(){
-      const selected=sessions().find(s=>s.sid===selectedSid),plan=selected?.reallocation;
+      const {selected}=selection('schedule'),plan=selected?.reallocation;
       const now=current(),today=moment(now).day;
       const count=(selected?.schedule||[]).filter(row=>row.status==='pending'&&Date.parse(row.at)>now.getTime()).length;
-      const reason=reallocating?t("pages.console.ui.sed48b8f83d"):state.tour?t("pages.console.ui.s8c5cdfcfc0"):state.busy?t("pages.console.ui.s9d3f3cc516"):
-        !selected?t("pages.console.ui.sd20f4b9d0a"):
+      const reason=reallocating?t("pages.console.ui.sed48b8f83d"):triggering?t('pages.console.ui.proactive_test_pending'):state.tour?t("pages.console.ui.s8c5cdfcfc0"):state.busy?t("pages.console.ui.s9d3f3cc516"):
+        !selected?t('pages.console.ui.schedule_choose_session'):
         !plan?t("pages.console.ui.s2609b6adc1"):
         selected.schedule_timezone!==clock?.timezone?t("pages.console.ui.s84ef3cdcba"):
         R(plan.reason)||((plan.date!==today||!count)?t("pages.console.ui.s05b8962d33"):
           count!==plan.count?t("pages.console.ui.sb6e8f870fd"):'');
       return {selected,plan,reason};
     }
-    function updateReallocation(){
-      const button=document.getElementById('redistribute-proactive'),hint=document.getElementById('redistribute-hint');if(!button||!hint)return;
-      const {reason}=reallocationState();button.disabled=!!reason;button.title=reason;if(hint.textContent!==reason)hint.textContent=reason;hint.hidden=!reason;
+    function testState(){
+      const {selected}=selection('test');
+      const reason=triggering?t('pages.console.ui.proactive_test_pending'):reallocating?t("pages.console.ui.sed48b8f83d"):state.tour?t("pages.console.ui.s8c5cdfcfc0"):state.busy?t("pages.console.ui.s9d3f3cc516"):
+        !selected?t('pages.console.ui.schedule_choose_session'):!selected.manual_trigger?t("pages.console.ui.s2609b6adc1"):R(selected.manual_trigger.reason)||'';
+      return {selected,reason};
+    }
+    function updateActions(){
+      const testing=state.tab==='proactive',prefix=testing?'proactive-test':'schedule',button=document.getElementById(testing?'trigger-proactive':'redistribute-proactive'),feedback=document.getElementById(prefix+'-action-feedback'),selectionHint=document.getElementById(prefix+'-selection-hint');if(!button||!feedback||!selectionHint)return;
+      const {selected,reason}=testing?testState():reallocationState();button.disabled=!!reason;button.title=reason;
+      const commonReason=!selected?t('pages.console.ui.schedule_choose_session'):'';
+      if(selectionHint.textContent!==commonReason)selectionHint.textContent=commonReason;selectionHint.hidden=!commonReason;
+      const previous=lastActions[testing?'test':'schedule'],action=previous?.sid===selected?.sid?previous:null;
+      const pending=testing?triggering:reallocating,runId=!pending&&testing?action?.run_id:null;
+      let text='';
+      if(pending)text=testing?t('pages.console.ui.proactive_test_pending'):t("pages.console.ui.sed48b8f83d");
+      else if(action?.error){
+        const error=R(action.error);
+        text=testing&&action.run_id?t('pages.console.ui.proactive_test_refresh_failed',{error}):action.saved?t("pages.console.ui.sefd200667a")+error:error;
+      }else if(action)text=testing?t('pages.console.ui.proactive_test_started'):t('pages.console.ui.schedule_reallocation_saved',{count:action.count});
+      const failed=!pending&&!!action?.error,signature=JSON.stringify([text,runId,failed,window.ActiveMessageI18n.getLocale()]);
+      if(feedback.dataset.signature!==signature){
+        feedback.dataset.signature=signature;feedback.replaceChildren();feedback.classList.toggle('warning',failed);
+        if(text)feedback.append(el('span',text));
+        if(runId){const view=el('button',t('pages.console.ui.proactive_test_view'),'result-link');view.onclick=()=>traceBrowser.open(runId).catch(fail);feedback.append(view);}
+      }
+      feedback.hidden=!text&&!runId;
+    }
+    async function triggerProactive(){
+      const {selected,reason}=testState();if(reason)return;
+      const sid=selected.sid,revision=state.revision;let locked=false,started=false;
+      triggering=true;updateActions();
+      try{
+        const confirmed=await dialog({title:t('pages.console.ui.proactive_test_title'),message:t('pages.console.ui.proactive_test_confirm',{session:S(sid)})+(state.dirty?'\n\n'+t('pages.console.ui.proactive_test_unsaved'):''),confirm:t('pages.console.ui.proactive_test_start'),cancel:t("pages.console.ui.s4d0b4688c7")});
+        if(!confirmed)return;
+        locked=true;busy(true);lastActions.test=null;
+        const result=await api('trigger_proactive',{sid,revision});started=true;lastActions.test={sid,run_id:result.run_id};
+        if(statusPending)await statusPending;
+        await refreshStatus();
+      }catch(error){
+        lastActions.test={sid,run_id:started?lastActions.test?.run_id:undefined,error:error.message};
+        if(!started)try{if(statusPending)await statusPending;await refreshStatus();}catch{}
+      }finally{triggering=false;if(locked)busy(false);if(state.tab==='proactive')renderTest();}
     }
     async function redistribute(){
       const {selected,plan,reason}=reallocationState();if(reason)return;
       const sid=selected.sid,revision=state.revision,scheduleRevision=plan.revision;
-      let locked=false,saved=false;reallocating=true;updateReallocation();
+      let locked=false,saved=false;reallocating=true;updateActions();
       try{
         const confirmed=await dialog({title:t("pages.console.ui.sfcfdc4db71"),message:t("pages.console.ui.s5e552e7d27")+S(sid)+t("pages.console.ui.s4b05f0e460")+plan.date+'（'+plan.timezone+t("pages.console.ui.s2bd06952be")+plan.count+t("pages.console.ui.s8f469a4fb4"),confirm:t("pages.console.ui.s26a44d8d21"),cancel:t("pages.console.ui.s4d0b4688c7")});
         if(!confirmed)return;
-        locked=true;busy(true);
-        const result=await api('redistribute',{sid,revision,schedule_revision:scheduleRevision});saved=true;
+        locked=true;busy(true);lastActions.schedule=null;
+        const result=await api('redistribute',{sid,revision,schedule_revision:scheduleRevision});saved=true;lastActions.schedule={sid,saved:true,count:result.count};
         if(statusPending)await statusPending;
         await refreshStatus();
-        notice(t("pages.console.ui.sec74f8a1b5")+result.date+t("pages.console.ui.s246cfa4efb")+result.count+t("pages.console.ui.s6c40c566e0")+S(sid)+'。');
       }catch(error){
-        notice(saved?t("pages.console.ui.sefd200667a")+error.message:error.message,true);
+        lastActions.schedule={sid,saved,error:error.message};
         if(!saved)try{if(statusPending)await statusPending;await refreshStatus();}catch{}
       }finally{reallocating=false;if(locked)busy(false);if(state.tab==='schedule')render();}
     }
@@ -143,7 +204,22 @@
       const now=current(),point=moment(now);if(renderedDate&&point.day!==renderedDate){render();return;}
       marker.style.left=point.minute/1440*100+'%';marker.dataset.edge=point.minute<120?'start':point.minute>1320?'end':'middle';marker.querySelector('span').textContent=t("pages.console.ui.s672d2d8473")+format(point.minute);marker.setAttribute('aria-label',t("pages.console.ui.s91bba5b9e4")+format(point.minute)+'，'+clock.timezone);
       document.querySelectorAll('.schedule-slot[data-status=pending]').forEach(n=>{n.classList.toggle('awaiting-sync',Number(n.dataset.at)<=now.getTime());});
-      updateReallocation();
+      updateActions();
+    }
+    function renderTest(){
+      const host=document.getElementById('proactive-test');if(!host)return;
+      const group=state.scope>=0?state.config.session_groups[state.scope]:null,focused=document.activeElement?.id;
+      host.replaceChildren();
+      if(group&&!state.saved.session_groups.some(g=>g.agenda_id===group.agenda_id)){host.append(el('small',t("pages.console.ui.s31460c914d"),'muted'));return;}
+      const {options,sid}=selection('test'),toolbar=el('div',undefined,'proactive-test-toolbar'),label=el('label',t('pages.console.ui.proactive_test_session')),select=el('select'),button=el('button',t('pages.console.ui.proactive_test_title')),hint=el('small',undefined,'muted'),feedback=el('small',undefined,'schedule-action-feedback');
+      select.id='proactive-test-session';select.setAttribute('aria-label',t('pages.console.ui.proactive_test_session'));label.htmlFor=select.id;
+      if(options.length)options.forEach(s=>select.add(new Option(S(s.sid),s.sid)));else select.add(new Option('—',''));
+      select.value=sid;select.title=S(sid);select.disabled=!options.length;select.onchange=()=>{selections.test.sid=select.value;renderTest();refreshStatus().catch(fail);};label.append(select);
+      hint.id='proactive-test-selection-hint';hint.setAttribute('role','status');hint.hidden=true;select.setAttribute('aria-describedby',hint.id);
+      feedback.id='proactive-test-action-feedback';feedback.setAttribute('role','status');feedback.hidden=true;
+      button.id='trigger-proactive';button.type='button';button.onclick=triggerProactive;button.setAttribute('aria-describedby',hint.id+' '+feedback.id);
+      toolbar.append(label,button,hint);host.append(toolbar,feedback);updateActions();
+      if(['proactive-test-session','trigger-proactive'].includes(focused))document.getElementById(focused)?.focus({preventScroll:true});
     }
     function render(){
       const box=document.getElementById('schedule-preview');if(!box||!state.effective)return;
@@ -162,19 +238,18 @@
         labelPoints.forEach(m=>{const percent=m/1440*100,x=percent/100*width,left=m===0?0:m===1440?width-labelWidth:x-labelWidth/2;let row=lastByRow.findIndex(end=>left>=end+6);if(row<0)row=lastByRow.length;lastByRow[row]=left+labelWidth;const label=el('span',format(m));label.style.left=percent+'%';label.style.top=row*19+'px';label.dataset.edge=m===0?'start':m===1440?'end':'middle';labels.append(label);});
         labels.style.height=(Math.max(...[...labels.children].map(n=>parseInt(n.style.top)),0)+22)+'px';axis.append(labels);
         const track=el('div',undefined,'schedule-track'),bar=el('div',undefined,'timebar');segments.forEach(s=>{const segment=el('span',undefined,s.status);segment.style.flex=String(s.end-s.start);segment.title=format(s.start)+'～'+format(s.end)+' '+names[s.status];segment.setAttribute('aria-label',segment.title);bar.append(segment);});track.append(bar);
-        const options=sessions(),newScope=state.scope<0?'global':state.config.session_groups[state.scope]?.agenda_id||'draft';
-        if(newScope!==scopeKey){scopeKey=newScope;selectedSid='';}if(!options.some(s=>s.sid===selectedSid))selectedSid=options[0]?.sid||'';
-        const selected=options.find(s=>s.sid===selectedSid),toolbar=el('div',undefined,'schedule-plan-toolbar');
-        if(options.length){const label=el('label',t("pages.console.ui.s3687c411a3")),select=el('select');select.id='schedule-session';select.setAttribute('aria-label',t("pages.console.ui.s60b205e543"));options.forEach(s=>select.add(new Option(S(s.sid),s.sid)));select.value=selectedSid;select.title=S(selectedSid);select.onchange=()=>{selectedSid=select.value;selectedAt='';render();refreshStatus().catch(fail);};label.append(select);toolbar.append(label);}
+        const {options,selected,sid}=selection('schedule'),toolbar=el('div',undefined,'schedule-plan-toolbar'),selectionHint=el('small',undefined,'muted');selectionHint.id='schedule-selection-hint';selectionHint.setAttribute('role','status');selectionHint.hidden=true;
+        if(options.length){const label=el('label',t("pages.console.ui.s3687c411a3")),select=el('select');select.id='schedule-session';select.setAttribute('aria-label',t("pages.console.ui.s60b205e543"));select.setAttribute('aria-describedby',selectionHint.id);options.forEach(s=>select.add(new Option(S(s.sid),s.sid)));select.value=sid;select.title=S(sid);select.onchange=()=>{selections.schedule.sid=select.value;selectedAt='';render();refreshStatus().catch(fail);};label.append(select);toolbar.append(label);}
         const now=current(),today=moment(now).day;renderedDate=today;
         const slots=(selected?.schedule||[]).filter(row=>moment(new Date(row.at)).day===today);
         const explanation=el('p',t("pages.console.ui.sc5edc88895"),'schedule-slot-detail');explanation.id='schedule-slot-detail';explanation.setAttribute('aria-live','polite');
         slots.forEach(row=>{const date=new Date(row.at),point=moment(date),marker=el('button',undefined,'schedule-slot');marker.type='button';marker.dataset.at=String(date.getTime());marker.dataset.status=row.status;marker.style.left=point.minute/1440*100+'%';const text=format(point.minute)+' · '+(statuses()[row.status]||row.status)+(row.reason?' · '+ST(row.reason):'');marker.title=text+'\n'+S(selected.sid);marker.setAttribute('aria-label',marker.title);marker.onclick=()=>{selectedAt=row.at;explanation.textContent=text;};if(selectedAt===row.at)explanation.textContent=text;track.append(marker);});
         const marker=el('div',undefined,'schedule-now');marker.id='schedule-now';marker.append(el('span',t("pages.console.ui.sa511e8442f")));track.append(marker);axis.append(track);
-        toolbar.append(el('small',today+' · '+slots.length+t("pages.console.ui.sbabe8db6dc")));box.append(toolbar,axis);
+        toolbar.append(selectionHint,el('small',today+' · '+slots.length+t("pages.console.ui.sbabe8db6dc")));box.append(toolbar,axis);
         const legend=el('div',undefined,'schedule-legend');for(const [key,name] of Object.entries(names)){const item=el('span',name);item.className=key;legend.append(item);}legend.append(el('span',t("pages.console.ui.sf128aab730"),'planned'),el('small',t("pages.console.ui.sb9cb982e0f")+(clock?.timezone||cfg.timezone||t("pages.console.ui.s1f3bc94376"))));
-        const footer=el('div',undefined,'schedule-footer'),action=el('div',undefined,'schedule-reallocation'),button=el('button',t("pages.console.ui.s873bf2d9e6")),hint=el('small');
-        button.id='redistribute-proactive';button.onclick=redistribute;hint.id='redistribute-hint';button.setAttribute('aria-describedby',hint.id);hint.setAttribute('role','status');action.append(button,hint);footer.append(legend,action);box.append(footer);
+        const footer=el('div',undefined,'schedule-footer'),action=el('div',undefined,'schedule-reallocation'),button=el('button',t("pages.console.ui.s873bf2d9e6")),feedback=el('small',undefined,'schedule-action-feedback');
+        feedback.id='schedule-action-feedback';feedback.setAttribute('role','status');feedback.hidden=true;
+        button.id='redistribute-proactive';button.onclick=redistribute;button.setAttribute('aria-describedby',selectionHint.id+' '+feedback.id);action.append(button,feedback);footer.append(legend,action);box.append(footer);
         let note=!selected?t("pages.console.ui.sb10a594207"):!selected.proactive||!state.status?.enabled?t("pages.console.ui.sda449ee56f"):!slots.length?t("pages.console.ui.sb625a1d378"):t("pages.console.ui.s082f03f0d2");
         if(state.dirty)note+=t("pages.console.ui.s5c653ba65f");
         box.append(el('p',note,'muted'));if(slots.length)box.append(explanation);
@@ -182,7 +257,7 @@
         updateClock();if(focusedSelect)document.getElementById('schedule-session')?.focus({preventScroll:true});else if(focusAt)box.querySelector('[data-at="'+focusAt+'"]')?.focus({preventScroll:true});
       }catch{box.append(el('p',t("pages.console.ui.s842c014367"),'warning'));}
     }
-    return {setClock(value){clock=value;receivedAt=Date.now();},selectedSid(){const options=sessions();return options.find(s=>s.sid===selectedSid)?.sid||options[0]?.sid||'';},updateClock,render};
+    return {setClock(value){clock=value;receivedAt=Date.now();},selectedSid(){return selection().sid;},updateClock,updateActions,render,renderTest};
   }
 
   function notice(text, bad=false) {
@@ -266,7 +341,7 @@
   function defaultObject(fields) { const out={};for(const [key,meta] of Object.entries(fields))out[key]=meta.type==='object'?defaultObject(meta.items):clone(meta.default??null);return out; }
   function selectTab(tab,persist=true) {
     if(!tabs().some(t=>t[0]===tab))return;
-    state.tab=tab;state.traceSeq++;state.previewSeq++;notice('');render(false);window.scrollTo(0,0);if(tab==='schedule')refreshStatus().catch(fail);if(persist)persistPrefs({tab});
+    state.tab=tab;state.traceSeq++;state.previewSeq++;notice('');render(false);window.scrollTo(0,0);if(['proactive','schedule'].includes(tab))refreshStatus().catch(fail);if(persist)persistPrefs({tab});
   }
   function nav() {
     $('nav').replaceChildren();
@@ -283,9 +358,9 @@
     $('scope-effective').textContent='';
     $('scope-bar').classList.toggle('group-scope',state.scope>=0);
   }
-  $('scope').onchange=()=>{state.scope=Number($('scope').value);state.calendarSid='';state.effective=null;state.previewSeq++;render();if(state.tab==='schedule')refreshStatus().catch(fail);};
+  $('scope').onchange=()=>{state.scope=Number($('scope').value);state.calendarSid='';state.effective=null;state.previewSeq++;render();if(['proactive','schedule'].includes(state.tab))refreshStatus().catch(fail);};
   function phaseFor(path) {
-    if(path.includes('decision')&&['prompt','jev_state_template'].includes(path.at(-1)))return 'decision';
+    if(path.includes('decision')&&path.at(-1)==='prompt')return 'decision';
     if(path.includes('proactive_chat')&&['prompts','task_prompt'].includes(path.at(-1)))return 'proactive';
     return null;
   }
@@ -519,7 +594,7 @@
       } else {
         box.append(field('enabled',state.schema.interjection.items.enabled,state.config.interjection,['interjection','enabled']));
         const metas=state.schema.interjection.items.decision.items;
-        const order=['mode','provider_id','timeout_seconds','retry_attempts','retry_delay_seconds','jev_model','jev_endpoint','jev_api_key','prompt','jev_state_template'];
+        const order=['mode','provider_id','timeout_seconds','retry_attempts','retry_delay_seconds','jev_model','jev_endpoint','jev_api_key','prompt'];
         const keys=[...order.filter(k=>metas[k]),...Object.keys(metas).filter(k=>!order.includes(k))];
         appendFields(model,state.config.interjection.decision,Object.fromEntries(keys.map(k=>[k,metas[k]])),['interjection','decision']);
         appendFields(rules,state.config.interjection,Object.fromEntries(Object.entries(state.schema.interjection.items).filter(([k])=>!['enabled','decision'].includes(k))),['interjection']);
@@ -533,14 +608,16 @@
       const obj=group?group[groupKey]:state.config[configKey],metas=group?gs[groupKey].items:state.schema[configKey].items;
       appendFields(box,obj,metas,[configKey],!!group);
       if(!isSchedule){
-        const link=el('div',undefined,'actions'),jump=el('button',t('pages.console.ui.shared_cooldown_jump'));jump.type='button';
+        box.classList.add('proactive-settings');
+        const link=el('div',undefined,'actions shared-cooldown-link'),jump=el('button',t('pages.console.ui.shared_cooldown_jump'));jump.type='button';
         jump.onclick=()=>{
           const groupIndex=state.scope;selectTab(groupIndex<0?'interjection':'groups');
           const selector=groupIndex<0?'.field[data-path="interjection.cooldown_seconds"] input':`.group-card[data-group-index="${groupIndex}"] .field[data-path="cooldown_override"] input`;
           const input=$('content').querySelector(selector);input?.focus({preventScroll:true});input?.closest('.field').scrollIntoView({block:'center'});
         };
         link.append(el('small',t('pages.console.ui.shared_cooldown_note')),jump);
-        box.querySelector('.field[data-path="proactive_chat.daily_limit"]').after(link);
+        const quota=box.querySelector('.field[data-path="proactive_chat.daily_limit"]'),operations=el('div',undefined,'proactive-actions'),test=el('div',undefined,'proactive-test-bar');
+        test.id='proactive-test';operations.append(test,link);quota.after(operations);scheduleView.renderTest();
       }
       if(isSchedule){const strip=section(t("pages.console.ui.s413c499e83"));strip.id='schedule-preview';root.append(strip);scheduleStrip();agendaUI.render(root,group);}else renderPlaceholders(root,['proactive']);
     } else {
@@ -605,7 +682,7 @@
     search.oninput=draw;box.append(search,list);root.append(box);draw();
   }
   function updatePlaceholderTarget(){const target=$('placeholder-target'),f=state.templateFocus;if(target)target.textContent=f?t("pages.console.ui.sebdaa723b5")+f.label+t("pages.console.ui.s56de6dca39"):t("pages.console.ui.s6d31c58e37");document.querySelectorAll('[data-insert-phases]').forEach(n=>n.disabled=!f||!f.input.isConnected||!JSON.parse(n.dataset.insertPhases).includes(f.phase));}
-  function scheduleStrip() { scheduleView.render(); }
+  function scheduleStrip() { scheduleView.render();scheduleView.renderTest(); }
   function renderTraces(root) { traceBrowser.render(root); }
   function drawTrace() {
     const steps=$('trace-steps'),detail=$('trace-detail');if(!steps||!detail)return;const scroll={steps:steps.scrollTop,detail:detail.scrollTop};const focusedStep=steps.contains(document.activeElement);steps.replaceChildren();
@@ -628,7 +705,7 @@
     const runId=state.run.run_id,index=state.step,seq=++state.traceSeq;detail.replaceChildren(el('p',t("pages.console.ui.sabba06ec22"),'muted'));
     api('trace',undefined,{run_id:runId,step:index}).then(step=>{
       if(seq!==state.traceSeq||state.tab!=='traces')return;detail.replaceChildren(el('h3',window.ActiveMessageI18n.runtime(step.label)),el('small',new Date(step.at*1000).toLocaleString(window.ActiveMessageI18n.getLocale())+' · '+window.ActiveMessageI18n.runtime(step.state)));
-      if(state.run.sid)detail.append(el('small',S(state.run.sid),'session-name-reference'));const references=SR(JSON.stringify(step.data??{}));if(references)detail.append(el('small',references,'session-name-reference'));
+      if(state.run.sid)detail.append(el('small',S(state.run.sid),'session-name-reference'));const references=SR(JSON.stringify(step.data??{}),state.run.sid);if(references)detail.append(el('small',references,'session-name-reference'));
       const record=step.data?.code?step.data:step.data?.['异常']||step.data?.['结果']||step.data?.['开始']||step.data;
       const diagnostic=window.ActiveMessageI18n.diagnostic(record?.code);
       if(diagnostic){detail.append(el('p',window.ActiveMessageI18n.runtime(diagnostic.message),'trace-explanation'));if(diagnostic.action)detail.append(el('p',window.ActiveMessageI18n.runtime(diagnostic.action)));if(diagnostic.tab){const go=el('button',t("pages.console.ui.sb256e67361"));go.onclick=()=>selectTab(diagnostic.tab);detail.append(go);}}
@@ -645,7 +722,7 @@
     if(statusPending)return statusPending;
     statusPending=(async()=>{
       const runId=state.run?.run_id,seq=state.traceSeq;
-      state.status=await api('status',undefined,state.tab==='schedule'?{schedule_sid:scheduleView.selectedSid()}:undefined);
+      state.status=await api('status',undefined,['proactive','schedule'].includes(state.tab)?{schedule_sid:scheduleView.selectedSid()}:undefined);
       if(redraw&&state.tab==='traces'&&runId&&seq===state.traceSeq){
         try{
           const run=await api('trace',undefined,{run_id:runId});
@@ -659,6 +736,7 @@
       if(redraw&&state.tab==='traces')traceBrowser.update();
       else if(redraw&&state.tab==='overview')render();
       else if(redraw&&state.tab==='schedule'){scheduleStrip();await refreshAgenda();await preview(true);}
+      else if(redraw&&state.tab==='proactive')scheduleView.renderTest();
     })();
     try{return await statusPending;}finally{statusPending=null;}
   }
@@ -746,9 +824,9 @@
     if(bridge.onContext)bridge.onContext(callback);else if(bridge.onContextChange)bridge.onContextChange(callback);
     matchMedia('(prefers-color-scheme:dark)').addEventListener('change',e=>{if(typeof bridge.getContext?.()?.isDark!=='boolean'){latestTheme=e.matches;applyTheme();}});
     await reload(true).catch(fail);
-    setInterval(()=>{if(!state.tour&&!document.hidden&&!state.busy&&((state.live&&!state.dirty&&state.tab==='overview')||(state.traceLive&&state.tab==='traces')||state.tab==='schedule'))refreshStatus().catch(fail);},5000);
-    setInterval(()=>{if(!document.hidden&&state.tab==='schedule')scheduleView.updateClock();},1000);
-    document.addEventListener('visibilitychange',()=>{if(!document.hidden){scheduleView.updateClock();if(state.tab==='schedule')refreshStatus().catch(fail);}});
+    setInterval(()=>{if(!state.tour&&!document.hidden&&!state.busy&&((state.live&&!state.dirty&&state.tab==='overview')||(state.traceLive&&state.tab==='traces')||['proactive','schedule'].includes(state.tab)))refreshStatus().catch(fail);},5000);
+    setInterval(()=>{if(!document.hidden){if(state.tab==='schedule')scheduleView.updateClock();else if(state.tab==='proactive')scheduleView.updateActions();}},1000);
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden){scheduleView.updateClock();if(['proactive','schedule'].includes(state.tab))refreshStatus().catch(fail);}});
   }
   const headerObserver=new ResizeObserver(()=>document.documentElement.style.setProperty('--header-height',window.innerWidth<=700?'0px':document.querySelector('header').getBoundingClientRect().height+'px'));
   headerObserver.observe(document.querySelector('header'));

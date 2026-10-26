@@ -90,7 +90,7 @@
         },
         "prompt": {
           "description": "判断提示词",
-          "hint": "告诉判断模型怎样判断“现在是否适合插话”。不确定时保留默认值。支持 {persona_prompt}（人格）、{conversation_history}（对话历史）、{recent_messages}（近期群消息）、{activity_score}、{energy_score}等占位符。"
+          "hint": "填写判断规则和需要的背景占位符，LLM/Jev 通用。人格用 {persona_prompt}，上次发言时间用 {ai_last_sent_time}。当前消息、选定历史、近期群消息和已有图片说明会自动附上，通常不必再写历史占位符。这里只判断是否插话，不生成聊天回复。"
         },
         "timeout_seconds": {
           "description": "判断请求超时（秒）",
@@ -107,10 +107,6 @@
         "jev_model": {
           "description": "Jev 模型名称",
           "hint": "填写接口支持的模型名称；默认 jev-latest。使用中转服务时，以该服务支持的名称为准。"
-        },
-        "jev_state_template": {
-          "description": "判断补充信息模板（LLM/Jev 通用）",
-          "hint": "给判断模型补充背景。当前消息、选定历史、近期群消息和已有图片说明会自动附上，通常不必再写历史占位符，以免重复。这些内容只用于判断，不修改负责回复的助手。"
         },
         "retry_attempts": {
           "description": "临时故障最多重试次数",
@@ -161,7 +157,7 @@
       },
       "task_prompt": {
         "description": "主动聊天任务说明",
-        "hint": "告诉机器人本次主动聊天要做什么。与上方随机选中的提示词合并为任务描述，位置与原生未来任务相同；是否发送及后续执行由原生 Agent 决定。"
+        "hint": "描述这次主动聊天机会。与随机选中的提示词一起提供给原会话 Agent。最后一次调用 send_message_to_user 时可设 finish_after_send=true：发送成功且本批工具正常结束后直接完成，不再请求模型写任务总结。不设时可继续处理，也可选择不发送。"
       }
     },
     "context": {
@@ -329,7 +325,7 @@
             },
             "task_prompt": {
               "description": "主动聊天任务说明",
-              "hint": "留空跟随全局；填写后只用于本组。告诉机器人本次主动聊天要做什么。与上方随机选中的提示词合并为任务描述，位置与原生未来任务相同；是否发送及后续执行由原生 Agent 决定。"
+              "hint": "留空跟随全局；填写后只用于本组。描述这次主动聊天机会。与随机选中的提示词一起提供给原会话 Agent。最后一次调用 send_message_to_user 时可设 finish_after_send=true：发送成功且本批工具正常结束后直接完成，不再请求模型写任务总结。不设时可继续处理，也可选择不发送。"
             }
           },
           "context_overrides": {
@@ -368,11 +364,7 @@
             "description": "本组判断提示词",
             "prompt": {
               "description": "判断提示词",
-              "hint": "留空跟随全局；填写后只用于本组。告诉判断模型怎样判断“现在是否适合插话”。不确定时保留默认值。支持 {persona_prompt}（人格）、{conversation_history}（对话历史）、{recent_messages}（近期群消息）、{activity_score} 和 {energy_score}。"
-            },
-            "jev_state_template": {
-              "description": "判断补充信息模板（LLM/Jev 通用）",
-              "hint": "留空跟随全局；填写后只用于本组。给判断模型补充背景。当前消息、选定历史、近期群消息和已有图片说明会自动附上，通常不必再写历史占位符，以免重复。这些内容只用于判断，不修改负责回复的助手。"
+              "hint": "留空跟随全局；填写后只用于本组。填写判断规则和需要的背景占位符，LLM/Jev 通用。人格用 {persona_prompt}，上次发言时间用 {ai_last_sent_time}。当前消息、选定历史、近期群消息和已有图片说明会自动附上，通常不必再写历史占位符。这里只判断是否插话，不生成聊天回复。"
             }
           },
           "agenda_mode": {
@@ -1121,7 +1113,19 @@
         "injection_pause_proactive": "暂停主动聊天：",
         "injection_pause_none": "当前没有日程要求暂停；作息等其他限制仍照常生效。",
         "injection_raw": "查看完整日程背景文字",
-        "injection_reason_invalid_session": "聊天 SID 没填完整。请从列表里选择，或填写“平台实例ID:GroupMessage:群号”（私聊用 FriendMessage）。"
+        "injection_reason_invalid_session": "聊天 SID 没填完整。请从列表里选择，或填写“平台实例ID:GroupMessage:群号”（私聊用 FriendMessage）。",
+        "proactive_test_title": "立即触发主动聊天",
+        "proactive_test_session": "测试会话",
+        "proactive_test_label": "手动测试",
+        "proactive_test_pending": "正在确认或启动手动测试…",
+        "proactive_test_confirm": "将在会话 {session} 中立即触发一次主动聊天，用于测试。\n\n使用该会话已保存的配置和提示词，可能真实发送消息并产生模型费用；模型也可能选择不发言。\n\n本次跳过抽卡等待、睡眠、日程暂停、冷却和每日额度限制，不扣正常额度、不重排已有预约。",
+        "proactive_test_unsaved": "当前有未保存的修改，本次测试使用已保存的设置。",
+        "proactive_test_start": "确认触发",
+        "proactive_test_started": "已启动本次主动聊天。",
+        "proactive_test_view": "查看本次决策回放",
+        "proactive_test_refresh_failed": "任务已启动，状态刷新失败：{error}",
+        "schedule_choose_session": "请先选择会话。",
+        "schedule_reallocation_saved": "已重新抽卡，共 {count} 个机会。"
       },
       "runtime": {
         "s274d480aa7": "近期群消息可能与原生分支或主框架群上下文重叠；它们均为参考资料。",
@@ -1748,7 +1752,20 @@
         "failure": "任务失败：{phase}",
         "sb330cf10d2": "请留空表示只提供进行中的日程，或填写整数。",
         "s4fa0fa6fea": "请填写不小于 {v0} 的整数，或留空表示只提供进行中的日程。",
-        "s590b0768b2": "请填写不小于 1 的整数，或留空表示不限制数量。"
+        "s590b0768b2": "请填写不小于 1 的整数，或留空表示不限制数量。",
+        "sf8be8c7c2c": "程序收尾",
+        "sc21572032a": "主动聊天请求（非最终网络报文）",
+        "sad1c58f52e": "最后一条消息已发送，进入程序收尾",
+        "sf8addaf574": "已发送，任务结束；聊天历史保存失败",
+        "s8f02b195c9": "已发送，仍在处理",
+        "proactive_silence": "选择不发言",
+        "proactive_silence_complete": "选择不发言，进入程序收尾",
+        "manual_test_start": "从 Pages 手动触发主动聊天",
+        "manual_test_explanation": "本次跳过抽卡等待、睡眠、日程暂停、冷却和每日额度限制；不消耗正常额度，不重排预约。",
+        "manual_test_changed": "设置已经变更，请重新载入后再测试。",
+        "manual_test_unknown": "启动结果未确认，请先刷新状态及决策回放，勿重复点击。",
+        "manual_test_runner": "不支持的 Agent 类型，请使用框架内置的 local 聊天助手。",
+        "manual_test_llm_disabled": "本会话 LLM 已关闭。"
       },
       "static": {
         "brand": "主动会话控制台",
@@ -2356,6 +2373,11 @@
       "message": "已忽略旧版异常留下的空配置保存记录，日程与现有配置已恢复。",
       "action": "",
       "tab": null
+    },
+    "PROACTIVE_TEST_START_FAILED": {
+      "message": "启动结果未确认，请先刷新状态及决策回放，勿重复点击。",
+      "action": "",
+      "tab": "traces"
     }
   },
   "tools": {

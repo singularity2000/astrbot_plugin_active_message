@@ -379,10 +379,9 @@ def validate_config(config, raw=None) -> dict[str, list[tuple[str, str]]]:
                       "请填写兼容 TypeSafe 协议的完整 HTTPS 接口地址；HTTP 仅限本机回环地址。")
                 if not decision.jev_api_key or any(c in decision.jev_api_key for c in "\r\n"):
                     errors["interjection"].append(("interjection.decision.jev_api_key", "请填写有效 API Key，不能含换行。"))
-            for key in ("prompt", "jev_state_template"):
-                check("interjection", "interjection.decision." + key,
-                      lambda k=key: validate_template(getattr(decision, k), decision=True),
-                      "存在未知占位符，或引用了判断完成后才有的分数、理由。")
+            check("interjection", "interjection.decision.prompt",
+                  lambda: validate_template(decision.prompt, decision=True),
+                  "存在未知占位符，或引用了判断完成后才有的分数、理由。")
     if config.proactive_enabled:
         for index, prompt in enumerate(config.proactive_prompts):
             check("proactive", f"proactive_chat.prompts[{index}]", lambda p=prompt: validate_template(p), "存在未知占位符，请查看控制台的占位符助手。")

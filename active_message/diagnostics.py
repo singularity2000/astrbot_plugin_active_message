@@ -35,17 +35,18 @@ class TraceStore:
         self.sizes.clear()
         self.latest_results.clear()
 
-    def watch(self, run_id, sid, kind, snapshot):
+    def watch(self, run_id, sid, kind, snapshot, *, source=None):
         kind = {"智能插话": "interjection", "主动聊天": "proactive"}.get(kind, kind)
         self.live[run_id] = {"sid": sid, "kind": kind,
                              "created_at": self.runs.get(run_id, {}).get("created_at", time.time()),
+                             "source": source or self.runs.get(run_id, {}).get("source"),
                              "snapshot": snapshot}
 
     def _active_run(self, run_id):
         live = self.live.get(run_id)
         if live is None:
             return None
-        return {"run_id": run_id, "sid": live["sid"], "kind": live["kind"],
+        return {"run_id": run_id, "sid": live["sid"], "kind": live["kind"], "source": live.get("source"),
                 "created_at": live["created_at"], "status": "进行中", "result": "running", "sent": False, "error": False, "steps": [],
                 "raw_enabled": self.capture_raw, "history_omitted": True}
 
@@ -54,6 +55,8 @@ class TraceStore:
         live = self.live.get(run["run_id"])
         if live is not None:
             result["progress"] = live["snapshot"]()
+            if result["progress"].get("sent"):
+                result.update(sent=True, status="已发送，仍在处理")
         return result
 
     def _prune(self):
@@ -65,7 +68,7 @@ class TraceStore:
             key, _ = self.runs.popitem(last=False)
             self.sizes.pop(key, None)
 
-    def begin(self, run_id, sid, kind):
+    def begin(self, run_id, sid, kind, *, source=None):
         kind = {"智能插话": "interjection", "主动聊天": "proactive", "收到消息": "other"}.get(kind, kind)
         if run_id in self.runs:
             self.runs[run_id].update(status="进行中", result="running", kind=kind, error=False)
@@ -74,6 +77,8 @@ class TraceStore:
                              "status":"进行中", "result":"running", "sent":False, "error":False,
                              "steps":[], "raw_enabled":self.capture_raw}
         self.sizes[run_id] = 512
+        if source is not None:
+            self.runs[run_id]["source"] = source
         self._prune()
 
     def _safe_json(self, data):

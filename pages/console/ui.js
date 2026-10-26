@@ -5,10 +5,10 @@
   const node = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined)n.textContent=text; if(cls)n.className=cls; return n; };
   let sessionNames=Object.create(null),sessionPattern=null;
   const sessionLabel=sid=>{const value=String(sid??''),name=sessionNames[value];return typeof name==='string'&&name?value+'（'+name+'）':value;};
-  function sessionReferences(value){
+  function sessionReferences(value,excludeSid=''){
     const text=String(value??'');
     if(!sessionPattern)return '';
-    return [...new Set([...text.matchAll(sessionPattern)].map(match=>match[0]))].map(sessionLabel).join('、');
+    return [...new Set([...text.matchAll(sessionPattern)].map(match=>match[0]))].filter(sid=>sid!==excludeSid).map(sessionLabel).join('、');
   }
   function sessionText(value){
     const text=String(value??'');

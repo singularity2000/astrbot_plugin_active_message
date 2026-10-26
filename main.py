@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # 本文件的插件版本只改这里；对外发布时请同步 metadata.yaml 的 version。
-PLUGIN_VERSION = "1.7.0"
+PLUGIN_VERSION = "1.8.0"
 
 import asyncio
 import copy
@@ -35,6 +35,7 @@ from .active_message.proactive import NativeAgentError, RunProgress, persist_pro
 from .active_message.decisions import DecisionClient, DecisionError
 from .active_message.models import DecisionResult, MessageObservation
 from .active_message.native import (
+    confirmed_current_session_send,
     current_conversation, platform_for_sid, resolve_persona,
     session_allows_plugin, tool_response_text,
 )
@@ -749,7 +750,18 @@ class ActiveMessagePlugin(Star):
         self._release_agent(sid, id(event))
         meta = event.get_extra(META_KEY, {})
         if meta.get("plugin") == PLUGIN_ID:
-            self._capture(meta["run_id"], "Agent 最终响应", {"role":getattr(response,"role",None), "text":getattr(response,"completion_text","")}, tone="response")
+            if event.get_extra("_active_message_finished_on_send", False):
+                self._capture(meta["run_id"], "最后一条消息已发送，进入程序收尾", {
+                    "source": "程序收尾", "sent": True, "summary_model_call": False,
+                    "history_saved": not bool(meta.get("history_failed")),
+                }, tone="warning" if meta.get("history_failed") else "success")
+            elif event.get_extra("_active_message_finished_without_send", False):
+                self._capture(meta["run_id"], "选择不发言，进入程序收尾", {
+                    "source": "程序收尾", "sent": False, "summary_model_call": False,
+                    "explanation": meta["progress"].silence_reason,
+                }, tone="decision")
+            else:
+                self._capture(meta["run_id"], "Agent 最终响应", {"role":getattr(response,"role",None), "text":getattr(response,"completion_text","")}, tone="response")
             self.observer.log("debug", "AGENT_DONE", sid=sid, run_id=meta["run_id"],
                               trigger_type=meta["trigger_type"], role=event.role, response_role=getattr(response, "role", None))
             if meta.get("trigger_type") == "智能插话":
@@ -789,12 +801,7 @@ class ActiveMessagePlugin(Star):
                            "seconds": round(time.monotonic() - start, 3)}, key=key, tone="warning" if error else "neutral")
         if getattr(tool, "name", "") != "send_message_to_user":
             return
-        text = tool_response_text(tool_result)
-        if not text.startswith("Message sent to session "):
-            return
-        sid = event.unified_msg_origin
-        target = str((tool_args or {}).get("session") or sid)
-        if target != sid:
+        if not confirmed_current_session_send(event, tool_result):
             return
         key = f"tool:{id(event)}:{event.get_extra('_active_message_send_seq', 0)}"
         try:
@@ -821,8 +828,8 @@ class ActiveMessagePlugin(Star):
             return
         meta = event.get_extra(META_KEY, {})
         proactive = meta.get("trigger_type") == "主动聊天"
-        # 已发送即消耗一次额度；分段消息不重复计数，未发送的正常完成在收尾计数。
-        count_turn = proactive and not event.get_extra("_active_message_sent", False)
+        # 自动聊天已发送即消耗一轮额度；分段不重复计数，手动测试不计额度。
+        count_turn = proactive and not meta.get("manual_test") and not event.get_extra("_active_message_sent", False)
         date = meta.get("scheduled_date", self._now(sid).date().isoformat()) if proactive else self._now(sid).date().isoformat()
         if self.runtime.sent(sid, key, date, cfg, proactive=count_turn):
             event.set_extra("_active_message_sent", True)
@@ -951,7 +958,7 @@ class ActiveMessagePlugin(Star):
             self._alarm.start()
             self._alarm.wake()
 
-    def _proactive_block_reason(self, sid: str) -> str:
+    def _proactive_block_reason(self, sid: str, *, manual_test: bool = False) -> str:
         cfg = self._config_for(sid)
         if not self._available() or not cfg.enabled or not cfg.proactive_enabled or not self._feature_valid(sid, "proactive"):
             return "主动聊天未开启、配置无效或插件正在停止。"
@@ -966,21 +973,72 @@ class ActiveMessagePlugin(Star):
             return "主框架未允许本会话使用插件或 LLM。"
         state = self.runtime.get(sid)
         now = self._now(sid)
-        if current_mood(now, cfg.sleep_hours, cfg.active_hours) == "睡眠":
+        if not manual_test and current_mood(now, cfg.sleep_hours, cfg.active_hours) == "睡眠":
             return "当前处于睡眠时段。"
-        if state.last_bot_date == now.date().isoformat() and state.daily_proactive_sent >= cfg.proactive_daily_limit:
+        if not manual_test and state.last_bot_date == now.date().isoformat() and state.daily_proactive_sent >= cfg.proactive_daily_limit:
             return "本会话已用完今日主动尝试额度。"
-        agenda_reason = self._agenda_block(sid, "proactive")
+        agenda_reason = "" if manual_test else self._agenda_block(sid, "proactive")
         if agenda_reason:
             return agenda_reason
         if state.agent_active:
             return "本会话 Agent 仍在处理另一轮任务。"
-        if self._cooling(state, sid):
+        if not manual_test and self._cooling(state, sid):
             return "机器人最近发送后仍在共享冷却期。"
         return ""
 
     def proactive_allowed_now(self, sid: str) -> bool:
         return not self._proactive_block_reason(sid)
+
+    def proactive_test_block_reason(self, sid: str) -> str:
+        """Manual tests skip timing/quota gates, but never session permissions or busy work."""
+        if sid in self._proactive_tasks:
+            return "本会话上一轮主动任务仍在进行。"
+        reason = self._proactive_block_reason(sid, manual_test=True)
+        if reason:
+            return reason
+        if self.context.get_config(umo=sid).get("agent_runner", {}).get("runner_type", "local") != "local":
+            return "不支持的 Agent 类型，请使用框架内置的 local 聊天助手。"
+        return ""
+
+    async def trigger_proactive(self, sid: str) -> dict[str, str]:
+        """Caller holds _settings_lock. Reserve atomically with the automatic scheduler."""
+        from astrbot.core.star.session_llm_manager import SessionServiceManager
+
+        async with self._tick_lock:
+            reason = self.proactive_test_block_reason(sid)
+            if reason:
+                raise ValueError(reason)
+            if not await SessionServiceManager.is_llm_enabled_for_session(sid):
+                raise ValueError("本会话 LLM 已关闭。")
+            # A native conversation may have started while reading session permissions.
+            reason = self.proactive_test_block_reason(sid)
+            if reason:
+                raise ValueError(reason)
+            run_id = uuid.uuid4().hex
+            meta = {"plugin": PLUGIN_ID, "run_id": run_id, "trigger_type": "主动聊天", "manual_test": True,
+                    "activation_template": random.choice(self._config_for(sid).proactive_prompts)}
+            self.runtime.invalidate(sid)
+            self.traces.begin(run_id, sid, "主动聊天", source="manual_test")
+            self.traces.add(run_id, "从 Pages 手动触发主动聊天", {
+                "sid": sid, "source": "manual_test",
+                "explanation": "本次跳过抽卡等待、睡眠、日程暂停、冷却和每日额度限制；不消耗正常额度，不重排预约。",
+            }, tone="decision")
+            # No await between reservation and returning the run ID: an HTTP
+            # disconnect cannot leave a half-created or untracked test.
+            task = asyncio.create_task(self._run_proactive(sid, meta), name="active-message-manual-test")
+            self._proactive_tasks[sid] = task
+            def release_unstarted(done: asyncio.Task) -> None:
+                # Cancellation before the coroutine's first step cannot enter
+                # _run_proactive's finally block (e.g. an immediate reload).
+                if self._proactive_tasks.get(sid) is not done:
+                    return
+                self._proactive_tasks.pop(sid, None)
+                if not done.cancelled() and (exc := done.exception()) is not None:
+                    self.observer.error("PROACTIVE_RUN_FAILED", exc, sid=sid, run_id=run_id)
+                self.traces.finish(run_id, "任务已取消" if done.cancelled() else "任务结束，未确认发送",
+                                   result="cancelled" if done.cancelled() else "failed", error=True)
+            task.add_done_callback(release_unstarted)
+            return {"run_id": run_id, "sid": sid}
 
     async def _tick(self, **_: Any) -> None:
         if not self._available() or not self.settings.any_enabled("proactive") or self._tick_lock.locked():
@@ -1135,7 +1193,8 @@ class ActiveMessagePlugin(Star):
         cfg = self._config_for(sid)
         progress = RunProgress(self.observer, sid, meta["run_id"], cfg.proactive_timeout_seconds, capture=self._capture)
         meta["progress"] = progress
-        self.traces.watch(meta["run_id"], sid, "主动聊天", progress.snapshot)
+        self.traces.watch(meta["run_id"], sid, "主动聊天", progress.snapshot,
+                          source="manual_test" if meta.get("manual_test") else None)
         deadline = None
         try:
             progress.enter("queue")
@@ -1149,7 +1208,7 @@ class ActiveMessagePlugin(Star):
                             await run_proactive_agent(self, sid, meta)
                             progress.check_deadline()
                     progress.check_deadline()
-                    if progress.completed and not progress.sent and not any(not task.done() for task in progress.active_tools):
+                    if not meta.get("manual_test") and progress.completed and not progress.sent and not any(not task.done() for task in progress.active_tools):
                         # 此处已完成整轮且通过截止时间检查；失败、取消、前置跳过不计。
                         self.runtime.consume_proactive(sid, meta.get("scheduled_date", self._now(sid).date().isoformat()))
                         self.observer.log("info", "PROACTIVE_QUOTA_USED", sid=sid, run_id=meta["run_id"],
@@ -1172,7 +1231,9 @@ class ActiveMessagePlugin(Star):
                           and time.monotonic() >= progress.deadline_at))
             native_failed = isinstance(exc, NativeAgentError) and not timed_out
             progress.result = "timeout" if timed_out else "failed"
-            if native_failed:
+            if native_failed and str(exc) == "PROACTIVE_HISTORY_FAILED":
+                progress.outcome = "已发送，任务结束；聊天历史保存失败"
+            elif native_failed:
                 progress.outcome = "已发送，后续原生 Agent 最终失败" if progress.sent else "原生 Agent 最终失败"
             else:
                 suffix = "超时" if timed_out else "失败"
@@ -1189,12 +1250,13 @@ class ActiveMessagePlugin(Star):
             self.observer.log("info", "PROACTIVE_COMPLETED", sid=sid, run_id=meta["run_id"],
                               outcome=outcome, failed=progress.result in {"failed", "timeout", "cancelled"}, **progress.snapshot())
             state = self.runtime.get(sid)
-            for row in state.proactive_schedule:
-                if row["at"] == meta.get("scheduled_at"):
-                    status = ("sent" if progress.sent else "quiet" if progress.completed else
-                              "skipped" if progress.result == "skipped" else "failed")
-                    row.update(status=status, reason=outcome)
-                    break
+            if not meta.get("manual_test"):
+                for row in state.proactive_schedule:
+                    if row["at"] == meta.get("scheduled_at"):
+                        status = ("sent" if progress.sent else "quiet" if progress.completed else
+                                  "skipped" if progress.result == "skipped" else "failed")
+                        row.update(status=status, reason=outcome)
+                        break
             self.traces.finish(meta["run_id"], outcome,
                                result="sent" if progress.sent else "quiet" if progress.completed else progress.result,
                                sent=progress.sent, error=progress.result in {"failed", "timeout", "cancelled"})
@@ -1202,11 +1264,12 @@ class ActiveMessagePlugin(Star):
             self._agent_events.pop(sid, None)
             self.runtime.get(sid).agent_active = False
             if not self._closed:
-                if self._available():
-                    self._schedule_next(sid)
-                    self._alarm.wake()
-                else:
-                    self.runtime.get(sid).proactive_next_run = None
+                if not meta.get("manual_test"):
+                    if self._available():
+                        self._schedule_next(sid)
+                        self._alarm.wake()
+                    else:
+                        self.runtime.get(sid).proactive_next_run = None
                 await self._persist_state()
 
     async def apply_agenda(self, candidate: Settings, *, expected_revision: str,

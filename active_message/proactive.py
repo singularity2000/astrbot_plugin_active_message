@@ -5,11 +5,77 @@ from .i18n import catalog
 
 import json
 import asyncio
+import copy
 import time
+from contextlib import aclosing
 from typing import Any
-from .native import session_allows_plugin, tool_response_text
+from astrbot.api import FunctionTool
+from .native import confirmed_current_session_send, session_allows_plugin, tool_response_text
 from .prompts import render_template
 from .diagnostics import exception_details
+
+
+FINISH_ARGUMENT = "finish_after_send"
+SILENCE_TOOL_NAME = "skip_proactive_chat"
+PROACTIVE_USER_PROMPT = (
+    "# PROACTIVE CHAT CONTEXT\n"
+    "The following object describes this opportunity to start a natural conversation:\n"
+    "{cron_job}\n\n"
+    "Use the original conversation, persona and available tools. Decide whether to send a message based on the context. "
+    "Use the same language as the previous conversation. "
+    "Do not produce a task report. Send user-visible messages through send_message_to_user. "
+    "When sending your final message, set finish_after_send=true only if no further actions are needed. "
+    "For multiple messages, finish only on the last send. The current batch of tools will finish first; "
+    "a failed send or failed tool does not complete the conversation. "
+    "To end this run without sending a message, call skip_proactive_chat with a brief reason. "
+    "The reason is recorded internally, not sent to the user. An empty response is not a completion signal."
+)
+
+
+def completion_send_tool(native: Any) -> Any:
+    """Extend a run-local copy; the native sender and global registry stay intact."""
+    tool = copy.copy(native)
+    tool.parameters = copy.deepcopy(native.parameters)
+    tool.parameters.setdefault("properties", {})[FINISH_ARGUMENT] = {
+        "type": "boolean",
+        "description": "Set true on the final send to the current session when all work is done. "
+                       "After successful delivery and the current tool batch completes without errors, "
+                       "end this proactive conversation without a summary model request. Default false.",
+    }
+    return tool
+
+
+class SkipProactiveChatTool(FunctionTool):
+    """A completion action bound to one proactive run, never globally registered."""
+
+    def __init__(self, progress: RunProgress) -> None:
+        super().__init__(
+            name=SILENCE_TOOL_NAME,
+            description="End the current proactive chat without sending a message. Include a brief reason. "
+                        "Available before any message has been sent in this run; completion waits for the current tool batch.",
+            parameters={"type": "object", "properties": {
+                "reason": {"type": "string", "description": "Reason for ending this run without sending a message.",
+                           "minLength": 1, "maxLength": 1000},
+            }, "required": ["reason"], "additionalProperties": False},
+        )
+        self.progress = progress
+
+    async def call(self, context: Any, **kwargs: Any) -> str:
+        progress = self.progress
+        progress.check_deadline()
+        event = context.context.event
+        meta = event.get_extra("_active_message_meta", {})
+        if meta.get("progress") is not progress or event.unified_msg_origin != progress.sid:
+            return "error: this action belongs to a different proactive run."
+        if progress.sent or event.get_extra("_active_message_sent", False):
+            return "error: a message has already been sent in this run."
+        reason = kwargs.get("reason")
+        if set(kwargs) != {"reason"} or not isinstance(reason, str) or not reason.strip() or len(reason) > 1000:
+            return "error: reason must be a nonempty string of at most 1000 characters."
+        progress.silence_reason = reason.strip()
+        # The native runner must finish this batch and its hooks before the
+        # completion adapter decides whether this request can be committed.
+        return json.dumps({"status": "silence_requested", "reason": progress.silence_reason}, ensure_ascii=False)
 
 
 async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> None:
@@ -18,163 +84,186 @@ async def run_proactive_agent(plugin: Any, sid: str, meta: dict[str, Any]) -> No
     from astrbot.core.agent.tool import ToolSet
     from astrbot.core.astr_main_agent import MainAgentBuildConfig, _get_session_conv, build_main_agent
     from astrbot.core.astr_main_agent_resources import (
-        PROACTIVE_AGENT_CRON_WOKE_SYSTEM_PROMPT, PROACTIVE_AGENT_CRON_WOKE_USER_PROMPT,
+        PROACTIVE_AGENT_CRON_WOKE_SYSTEM_PROMPT,
     )
     from astrbot.core.config.agent_runner import resolve_context_compression_config
     from astrbot.core.cron.events import CronMessageEvent
+    from astrbot.core.log import log_context
+    from astrbot.core.platform.astr_message_event import event_context
     from astrbot.core.platform.message_session import MessageSession
     from astrbot.core.provider.entities import ProviderRequest
     from astrbot.core.star.session_llm_manager import SessionServiceManager
     from astrbot.core.tools.message_tools import SendMessageToUserTool
     from astrbot.core.utils.config_number import coerce_int_config
+    from astrbot.core.utils.active_event_registry import active_event_registry
     from astrbot.core.utils.session_lock import session_lock_manager
+    from astrbot.core.utils.trace import trace_execution
 
     config = plugin._config_for(sid)
     progress: RunProgress = meta["progress"]
     context = plugin.context
     session = MessageSession.from_str(sid)
+    manual_test = bool(meta.get("manual_test"))
+    name = "主动聊天 · 手动测试" if manual_test else "主动聊天"
     event = CronMessageEvent(
-        context=context, session=session, message="",
+        context=context, session=session, message=name,
         extras={"_active_message_meta": meta}, message_type=session.message_type,
     )
     event.role = "member"
-    cfg = context.get_config(umo=sid)
-    selected = cfg.get("plugin_set", ["*"])
-    event.plugins_name = None if selected == ["*"] else selected
     runner = None
-    progress.enter("session_lock")
-    async with session_lock_manager.acquire_lock(sid):
-        progress.enter("checks")
-        if meta.get("scheduled_date", plugin._now(sid).date().isoformat()) != plugin._now(sid).date().isoformat():
-            progress.result = "skipped"
-            progress.outcome = "跳过：这次预约属于前一天"
-            return
-        if not plugin.proactive_allowed_now(sid) or not session_allows_plugin(context, sid, plugin.PLUGIN_ID):
-            progress.result = "skipped"
-            progress.outcome = "跳过：运行条件已变化"
-            plugin.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid, run_id=meta["run_id"])
-            return
-        if not await SessionServiceManager.should_process_llm_request(event):
-            progress.result = "skipped"
-            progress.outcome = "跳过：会话 LLM 已关闭"
-            plugin.observer.log("info", "SESSION_LLM_DISABLED", sid=sid, run_id=meta["run_id"])
-            return
+    with (log_context(event.get_platform_id(), event.get_platform_name()),
+          event_context(event), trace_execution(event.trace)):
+        progress.enter("session_lock")
         cfg = context.get_config(umo=sid)
-        if cfg.get("agent_runner", {}).get("runner_type", "local") != "local":
-            progress.result = "skipped"
-            progress.outcome = "跳过：不支持的 Agent 类型"
-            plugin.observer.log("warning", "PROACTIVE_RUNNER_UNSUPPORTED", sid=sid, run_id=meta["run_id"])
-            return
-        settings = cfg.get("provider_settings", {}) or {}
-        runner_settings = cfg.get("agent_runner", {}).get("config", {})
-        persona_settings = runner_settings.get("persona", {})
-        misc = runner_settings.get("misc", {})
-        model = runner_settings.get("model", {})
-        build_cfg = MainAgentBuildConfig(
-            tool_call_timeout=misc.get("tool_call_timeout", 120),
-            fallback_provider_ids=model.get("fallback_provider_ids", []),
-            **resolve_context_compression_config(runner_settings.get("compression", {})),
-            llm_safety_mode=persona_settings.get("safety_mode", True),
-            safety_mode_strategy=persona_settings.get("safety_mode_strategy", "system_prompt"),
-            streaming_response=False,
-            computer_use_runtime=settings.get("computer_use_runtime", "none"),
-            sandbox_cfg=settings.get("sandbox", {}),
-            provider_settings=settings,
-        )
-        max_steps = coerce_int_config(misc.get("max_steps", 128), default=128, min_value=1,
-                                     field_name="agent_runner.config.misc.max_steps")
-        progress.enter("conversation")
-        conversation = await _get_session_conv(event, context)
-        progress.enter("context")
-        values = await plugin._values(event, conversation, "主动聊天")
-        values.update(model_score="不适用", score="不适用", decision_reason="定时主动聊天")
-        description = "\n\n".join(text for text in (
-            render_template(config.proactive_task_prompt, values),
-            render_template(meta["activation_template"], values),
-        ) if text)
-        cron_meta = {
-            "id": meta["run_id"], "name": "主动聊天", "type": "active_agent", "run_once": True,
-            "description": description, "note": description,
-            "run_started_at": plugin._now(sid).isoformat(), "run_at": meta.get("scheduled_at"),
-            "session": sid,
-        }
-        event = CronMessageEvent(
-            context=context, session=session, message=description,
-            extras={"_active_message_meta": meta, "cron_job": cron_meta,
-                    "cron_payload": {"session": sid, "note": description}}, message_type=session.message_type,
-        )
-        event.role = "member"
+        selected = cfg.get("plugin_set", ["*"])
         event.plugins_name = None if selected == ["*"] else selected
-        request = ProviderRequest(
-            conversation=conversation, contexts=json.loads(conversation.history or "[]"),
-            system_prompt=PROACTIVE_AGENT_CRON_WOKE_SYSTEM_PROMPT,
-            prompt=PROACTIVE_AGENT_CRON_WOKE_USER_PROMPT.format(cron_job=json.dumps(cron_meta, ensure_ascii=False)),
-        )
-        request.func_tool = ToolSet()
-        request.func_tool.add_tool(context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool))
-        progress.enter("build", tool_timeout_seconds=build_cfg.tool_call_timeout,
-                       request_max_retries=build_cfg.request_max_retries)
-        result = await build_main_agent(event=event, plugin_context=context, config=build_cfg, req=request, apply_reset=False)
-        if result is None:
-            progress.outcome = "失败：原生 Agent 构建未完成"
-            plugin.observer.log("warning", "PROACTIVE_AGENT_BUILD_FAILED", sid=sid, run_id=meta["run_id"])
-            return
-        runner = result.agent_runner
-        meta["history_conversation_id"] = getattr(result.provider_request.conversation, "cid", None)
-        reset = result.reset_coro
-        try:
-            # Native future tasks go straight from build to the runner. Do not
-            # add request hooks, duplicate history or replace the native sender.
-            plugin._capture(meta["run_id"], "原生未来任务请求（非最终网络报文）", {
-                "system_prompt": result.provider_request.system_prompt,
-                "prompt": result.provider_request.prompt,
-                "contexts": result.provider_request.contexts,
-                "tools": [tool.name for tool in result.provider_request.func_tool.tools]
-                         if result.provider_request.func_tool else [],
-            })
-            if reset is not None:
-                progress.enter("reset")
-                await reset
-                reset = None
-            observe_runner(runner, progress, plugin=plugin)
-            plugin.runtime.get(sid).agent_active = True
-            plugin.observer.log("debug", "AGENT_STARTED", sid=sid, run_id=meta["run_id"], role="member", trigger_type="主动聊天")
-            progress.enter("agent")
-            async for _ in runner.step_until_done(max_steps):
-                pass
-            if getattr(getattr(runner, "state", None), "name", "") == "ERROR":
-                raise NativeAgentError("NATIVE_AGENT_ERROR")
-            if getattr(getattr(runner, "state", None), "name", "") != "DONE":
-                raise NativeAgentError("NATIVE_AGENT_NOT_COMPLETED")
-            progress.sent = progress.sent or event.get_extra("_active_message_sent", False)
-            if not progress.sent:
-                plugin.observer.log("debug", "PROACTIVE_NO_SEND", sid=sid, run_id=meta["run_id"])
-            progress.outcome = "已发送，任务完成" if progress.sent else "正常完成，未发送"
-            progress.enter("complete")
-            progress.completed = True
-            progress.result = "completed"
-        finally:
+        async with session_lock_manager.acquire_lock(sid):
+            progress.enter("checks")
+            if not manual_test and meta.get("scheduled_date", plugin._now(sid).date().isoformat()) != plugin._now(sid).date().isoformat():
+                progress.result = "skipped"
+                progress.outcome = "跳过：这次预约属于前一天"
+                return
+            allowed = (not plugin._proactive_block_reason(sid, manual_test=True)) if manual_test else plugin.proactive_allowed_now(sid)
+            if not allowed or not session_allows_plugin(context, sid, plugin.PLUGIN_ID):
+                progress.result = "skipped"
+                progress.outcome = "跳过：运行条件已变化"
+                plugin.observer.log("debug", "PROACTIVE_SKIPPED", sid=sid, run_id=meta["run_id"])
+                return
+            if not await SessionServiceManager.should_process_llm_request(event):
+                progress.result = "skipped"
+                progress.outcome = "跳过：会话 LLM 已关闭"
+                plugin.observer.log("info", "SESSION_LLM_DISABLED", sid=sid, run_id=meta["run_id"])
+                return
+            cfg = context.get_config(umo=sid)
+            if cfg.get("agent_runner", {}).get("runner_type", "local") != "local":
+                progress.result = "skipped"
+                progress.outcome = "跳过：不支持的 Agent 类型"
+                plugin.observer.log("warning", "PROACTIVE_RUNNER_UNSUPPORTED", sid=sid, run_id=meta["run_id"])
+                return
+            settings = cfg.get("provider_settings", {}) or {}
+            runner_settings = cfg.get("agent_runner", {}).get("config", {})
+            persona_settings = runner_settings.get("persona", {})
+            misc = runner_settings.get("misc", {})
+            model = runner_settings.get("model", {})
+            build_cfg = MainAgentBuildConfig(
+                tool_call_timeout=misc.get("tool_call_timeout", 120),
+                fallback_provider_ids=model.get("fallback_provider_ids", []),
+                **resolve_context_compression_config(runner_settings.get("compression", {})),
+                llm_safety_mode=persona_settings.get("safety_mode", True),
+                safety_mode_strategy=persona_settings.get("safety_mode_strategy", "system_prompt"),
+                streaming_response=False,
+                computer_use_runtime=settings.get("computer_use_runtime", "none"),
+                sandbox_cfg=settings.get("sandbox", {}),
+                provider_settings=settings,
+            )
+            max_steps = coerce_int_config(misc.get("max_steps", 128), default=128, min_value=1,
+                                         field_name="agent_runner.config.misc.max_steps")
+            progress.enter("conversation")
+            conversation = await _get_session_conv(event, context)
+            progress.enter("context")
+            values = await plugin._values(event, conversation, "主动聊天")
+            values.update(model_score="不适用", score="不适用", decision_reason="手动测试主动聊天" if manual_test else "定时主动聊天")
+            description = "\n\n".join(text for text in (
+                render_template(config.proactive_task_prompt, values),
+                render_template(meta["activation_template"], values),
+            ) if text)
+            cron_meta = {
+                "id": meta["run_id"], "name": name, "type": "active_agent", "run_once": True,
+                "description": description, "note": description,
+                "run_started_at": plugin._now(sid).isoformat(), "run_at": meta.get("scheduled_at"),
+                "session": sid,
+            }
+            # Reuse the event already registered above, including its single trace.
+            from astrbot.core.message.components import Plain
+            event.message_str = description
+            event.message_obj.message = [Plain(description)]
+            event.message_obj.message_str = event.message_obj.raw_message = description
+            event.set_extra("cron_job", cron_meta)
+            event.set_extra("cron_payload", {"session": sid, "note": description})
+            event.trace.record("event_received", message_outline=event.get_message_outline())
+            request = ProviderRequest(
+                conversation=conversation, contexts=json.loads(conversation.history or "[]"),
+                system_prompt=PROACTIVE_AGENT_CRON_WOKE_SYSTEM_PROMPT,
+                prompt=PROACTIVE_USER_PROMPT.format(cron_job=json.dumps(cron_meta, ensure_ascii=False)),
+            )
+            request.func_tool = ToolSet()
+            request.func_tool.add_tool(context.get_llm_tool_manager().get_builtin_tool(SendMessageToUserTool))
+            progress.enter("build", tool_timeout_seconds=build_cfg.tool_call_timeout,
+                           request_max_retries=build_cfg.request_max_retries)
+            result = await build_main_agent(event=event, plugin_context=context, config=build_cfg, req=request, apply_reset=False)
+            if result is None:
+                progress.outcome = "失败：原生 Agent 构建未完成"
+                plugin.observer.log("warning", "PROACTIVE_AGENT_BUILD_FAILED", sid=sid, run_id=meta["run_id"])
+                raise NativeAgentError("PROACTIVE_AGENT_BUILD_FAILED")
+            runner = result.agent_runner
+            reset = result.reset_coro
             try:
+                # build_main_agent may supply the native tool again. Replace
+                # only this request's schema before reset (including skills-like).
+                tools = result.provider_request.func_tool
+                if tools is not None:
+                    result.provider_request.func_tool = ToolSet(list(tools.tools))
+                    if (sender := tools.get_tool("send_message_to_user")) is not None:
+                        result.provider_request.func_tool.add_tool(completion_send_tool(sender))
+                    result.provider_request.func_tool.add_tool(SkipProactiveChatTool(progress))
+                meta["history_conversation_id"] = getattr(result.provider_request.conversation, "cid", None)
+                plugin._capture(meta["run_id"], "主动聊天请求（非最终网络报文）", {
+                    "system_prompt": result.provider_request.system_prompt,
+                    "prompt": result.provider_request.prompt,
+                    "contexts": result.provider_request.contexts,
+                    "tools": [tool.name for tool in result.provider_request.func_tool.tools]
+                             if result.provider_request.func_tool else [],
+                })
                 if reset is not None:
-                    reset.close()
-                if runner is not None and getattr(runner, "state", None) is not None and not runner.done():
-                    runner.request_stop()
+                    progress.enter("reset")
+                    await reset
+                    reset = None
+                observe_runner(runner, progress, plugin=plugin)
+                active_event_registry.register_agent_stop_callback(event, runner.request_stop)
+                plugin.runtime.get(sid).agent_active = True
+                plugin.observer.log("debug", "AGENT_STARTED", sid=sid, run_id=meta["run_id"], role="member", trigger_type="主动聊天")
+                progress.enter("agent")
+                async for _ in runner.step_until_done(max_steps):
+                    pass
+                if runner.was_aborted():
+                    raise asyncio.CancelledError
+                if getattr(getattr(runner, "state", None), "name", "") == "ERROR":
+                    raise NativeAgentError("NATIVE_AGENT_ERROR")
+                if getattr(getattr(runner, "state", None), "name", "") != "DONE":
+                    raise NativeAgentError("NATIVE_AGENT_NOT_COMPLETED")
+                progress.sent = progress.sent or event.get_extra("_active_message_sent", False)
+                if meta.get("history_failed"):
+                    raise NativeAgentError("PROACTIVE_HISTORY_FAILED")
+                if not progress.sent:
+                    plugin.observer.log("debug", "PROACTIVE_NO_SEND", sid=sid, run_id=meta["run_id"])
+                progress.outcome = ("已发送，任务完成" if progress.sent else
+                                    "选择不发言" if event.get_extra("_active_message_finished_without_send", False) else
+                                    "正常完成，未发送")
+                progress.enter("complete")
+                progress.completed = True
+                progress.result = "completed"
             finally:
+                active_event_registry.unregister_agent_stop_callback(event)
                 try:
-                    await progress.cancel_tools()
+                    if reset is not None:
+                        reset.close()
+                    if runner is not None and getattr(runner, "state", None) is not None and not runner.done():
+                        runner.request_stop()
                 finally:
-                    remaining = {task for task in progress.active_tools if not task.done()}
-                    if remaining:
-                        plugin._valid = False
-                        plugin._unfinished_tools.update(remaining)
-                        def forget(task):
-                            plugin._unfinished_tools.discard(task)
-                            if not task.cancelled():
-                                task.exception()
-                        for task in remaining:
-                            task.add_done_callback(forget)
-                    plugin.runtime.get(sid).agent_active = False
-
+                    try:
+                        await progress.cancel_tools()
+                    finally:
+                        remaining = {task for task in progress.active_tools if not task.done()}
+                        if remaining:
+                            plugin._valid = False
+                            plugin._unfinished_tools.update(remaining)
+                            def forget(task):
+                                plugin._unfinished_tools.discard(task)
+                                if not task.cancelled():
+                                    task.exception()
+                            for task in remaining:
+                                task.add_done_callback(forget)
+                        plugin.runtime.get(sid).agent_active = False
 
 async def persist_proactive_message(
     plugin: Any, event: Any, key: str, content: str | list[dict[str, Any]],
@@ -221,9 +310,11 @@ async def persist_proactive_message(
             )
             await manager.update_conversation(sid, cid, history=history)
             saved.add(key)
+            meta.setdefault("history_failed", set()).discard(key)
             plugin.observer.log("debug", "PROACTIVE_HISTORY_SAVED", sid=sid, run_id=meta["run_id"], conversation_id=cid)
         except Exception as exc:
             # Delivery already succeeded; a storage failure must not retry a send.
+            meta.setdefault("history_failed", set()).add(key)
             plugin.observer.error("PROACTIVE_HISTORY_FAILED", exc, sid=sid, run_id=meta["run_id"])
 
 
@@ -255,6 +346,10 @@ class RunProgress:
         self.cleanup_completed = False
         self.cleanup_seconds = 0.0
         self.owner_task = asyncio.current_task()
+        self.finish_after_send = False
+        self.silence_reason: str | None = None
+        self.batch_failed = False
+        self.done_called = False
 
     def check_deadline(self) -> None:
         # Some framework hook dispatchers swallow CancelledError. Recheck at
@@ -315,6 +410,7 @@ class RunProgress:
                 "tracked_tools_cleanup_completed": self.cleanup_completed,
                 "cleanup_seconds": self.cleanup_seconds,
                 "sent": self.sent, "result": self.result, **self.details,
+                **({"silence_reason": self.silence_reason} if self.completed and not self.sent and self.silence_reason else {}),
                 **({"last_failure": self.last_failure} if self.last_failure else {})}
 
     def failure(self, code: str, exc: BaseException | None = None, **fields: Any) -> None:
@@ -391,6 +487,10 @@ class _ObservedExecutor(_Delegate):
         p.tools += 1
         tool = kwargs.get("tool", args[0] if args else None)
         name = str(getattr(tool, "name", ""))[:160]
+        # The extra argument belongs to our runner, not the native sender.
+        finish = False
+        if name == "send_message_to_user":
+            finish = kwargs.pop(FINISH_ARGUMENT, False) is True
         p.enter("tool", tool=name, tool_call=p.tools)
         iterator = self.original.execute(*args, **kwargs)
         try:
@@ -405,13 +505,13 @@ class _ObservedExecutor(_Delegate):
                     if self.plugin is not None and name == "send_message_to_user" and not getattr(response, "isError", False):
                         run_context = kwargs.get("run_context", args[1] if len(args) > 1 else None)
                         event = run_context.context.event
-                        receipt = "Message sent to session " + event.unified_msg_origin
-                        if tool_response_text(response).strip() == receipt:
+                        if confirmed_current_session_send(event, response):
                             key = f"tool:{id(event)}:{event.get_extra('_active_message_send_seq', 0)}"
                             try:
                                 await self.plugin._record_sent(event, key)
                             finally:
                                 await persist_proactive_message(self.plugin, event, key, kwargs.get("messages", []))
+                            p.finish_after_send = p.finish_after_send or finish
                 except StopAsyncIteration:
                     break
                 finally:
@@ -423,12 +523,14 @@ class _ObservedExecutor(_Delegate):
                     isinstance(getattr(part, "text", None), str)
                     and part.text.lstrip().lower().startswith("error:") for part in parts)
                 if getattr(response, "isError", False) or error_prefix:
+                    p.batch_failed = True
                     p.failure("PROACTIVE_TOOL_FAILED", tool=name, result_is_error=bool(getattr(response, "isError", False)),
                               result_error_prefix=bool(error_prefix))
                 yield response
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            p.batch_failed = True
             p.failure("PROACTIVE_TOOL_FAILED", exc, tool=name)
             p.enter("agent")
             raise
@@ -447,6 +549,7 @@ class _ObservedHooks(_Delegate):
         try:
             await getattr(self.original, name)(*args)
         except Exception as exc:
+            self.progress.batch_failed = True
             self.progress.failure("PROACTIVE_HOOK_FAILED", exc, hook=name)
             raise
         self.progress.check_deadline()
@@ -456,6 +559,7 @@ class _ObservedHooks(_Delegate):
         await self._call("on_agent_begin", *args)
 
     async def on_agent_done(self, *args: Any) -> None:
+        self.progress.done_called = True
         await self._call("on_agent_done", *args)
 
     async def on_tool_start(self, *args: Any) -> None:
@@ -466,7 +570,7 @@ class _ObservedHooks(_Delegate):
 
 
 def observe_runner(runner: Any, progress: RunProgress, *, plugin: Any = None) -> None:
-    """Native local runner adapter, verified against AstrBot v4.28.2.
+    """Native local runner adapter, verified against AstrBot v4.29.3.
 
     The proactive adapter explicitly disables streaming. Provider-level calls
     include SDK retries; these counters are NOT individual HTTP attempts.
@@ -482,3 +586,50 @@ def observe_runner(runner: Any, progress: RunProgress, *, plugin: Any = None) ->
         runner.tool_executor = _ObservedExecutor(runner.tool_executor, progress, plugin)
     if getattr(runner, "agent_hooks", None) is not None:
         runner.agent_hooks = _ObservedHooks(runner.agent_hooks, progress)
+    if plugin is not None:
+        runner.step = _CompletionStep(runner, progress)
+
+
+class _CompletionStep:
+    """Finish only at a native step boundary, after every tool result/hook.
+
+    AstrBot has no public normal-finish API for tools. Keep this small adapter
+    aligned with ToolLoopAgentRunner._complete_with_assistant_response: update
+    state/stats, notify done hooks once, and resolve follow-ups. There is no
+    artificial assistant message or model summary to persist.
+    """
+
+    def __init__(self, runner: Any, progress: RunProgress) -> None:
+        self.runner, self.progress, self.original = runner, progress, runner.step
+
+    async def __call__(self):
+        from astrbot.core.agent.runners.base import AgentState
+        from astrbot.core.provider.entities import LLMResponse
+
+        runner, progress = self.runner, self.progress
+        progress.finish_after_send = progress.batch_failed = False
+        progress.silence_reason = None
+        start = len(runner.run_context.messages)
+        async with aclosing(self.original()) as steps:
+            async for response in steps:
+                yield response
+        progress.check_deadline()
+        event = runner.run_context.context.event
+        silence = bool(progress.silence_reason) and not (progress.sent or event.get_extra("_active_message_sent", False))
+        if (not (progress.finish_after_send or silence) or progress.batch_failed or progress.done_called
+                or runner.state == AgentState.ERROR
+                or runner._is_stop_requested()):
+            return
+        # Missing/denied tools are handled inside the native runner without
+        # entering our executor. Their error results must block early completion.
+        for message in runner.run_context.messages[start:]:
+            if message.role == "tool" and str(message.content).lstrip().lower().startswith("error:"):
+                return
+        event.set_extra("_active_message_finished_without_send" if silence else "_active_message_finished_on_send", True)
+        runner.final_llm_resp = LLMResponse(role="assistant", completion_text="")
+        runner._transition_state(AgentState.DONE)
+        runner.stats.end_time = time.time()
+        try:
+            await runner.agent_hooks.on_agent_done(runner.run_context, runner.final_llm_resp)
+        finally:
+            runner._resolve_unconsumed_follow_ups()
